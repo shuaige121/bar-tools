@@ -1,15 +1,18 @@
-# 酒桌工具箱 · bar.leonardchow.work
+# Bar Tools · bar.leonardchow.work
 
-四个算牌小工具，为酒吧场景做的：光线暗、单手、有人催、可能微醺。
+Four card/dice calculators built for the environment they're actually used in:
+a dim bar, one hand on the phone, someone waiting for you to act.
 
-**[打开 → bar.leonardchow.work](https://bar.leonardchow.work)** · 纯静态单文件 · 离线可用 · 可加主屏当 App · 所有计算在你手机本地完成
+**[Open → bar.leonardchow.work](https://bar.leonardchow.work)** · single static file · works offline · installable to home screen · everything computes on your device
 
-| 工具 | 做什么 |
+*[中文说明](README.zh-CN.md)*
+
+| Tool | What it answers |
 |---|---|
-| 🎲 **吹牛骰子** | 输入人数、你的骰子、上家叫的注 → 该开还是该往上叫，逐个叫法算胜率 |
-| ♠♥ **德州扑克** | 手牌 + 公共牌 + 几个对手 → 打到河牌的胜率，以及底池要多大跟注才不亏 |
-| **21点** | 你的牌 + 庄家明牌 → 要牌/停牌/双倍/分牌/投降，按精确 EV 排序；附 Hi-Lo 算牌 |
-| **24点** | 四张牌 → 列出全部解法，精确有理数穷举 |
+| 🎲 **Liar's Dice** (吹牛/大话骰) | Given the player count, your dice, and the standing bid — challenge, or raise to what? |
+| ♠♥ **Texas Hold'em** | Hole cards + board + opponent count → equity to the river, and how big the pot must be for a call to break even |
+| **Blackjack** | Your hand + dealer upcard → hit/stand/double/split/surrender ranked by exact EV, plus a Hi-Lo counter |
+| **24 Game** | Four cards → every solution, found with exact rational arithmetic |
 
 <p align="center">
   <img src="docs/screenshots/home.png" width="200">
@@ -20,124 +23,153 @@
 
 ---
 
-## 凭什么可信
+## Why you should believe the numbers
 
-赌桌上的工具，算错就是让人输钱。所以这个项目的重点不在功能，在**证明它没算错**。
+A tool used at a gambling table is worse than useless if it's subtly wrong.
+So the substance of this project isn't the features — it's the evidence that
+the math is right.
 
-### 数字锚在外部可查的事实上
+### Every engine is anchored to an externally checkable fact
 
-| 引擎 | 锚点 |
+| Engine | Anchor |
 |---|---|
-| 德州评牌 | 枚举 C(52,5)=2,598,960 手牌，同花顺40 / 四条624 / 葫芦3744 / 同花5108 / 顺子10200 / 三条54912 / 两对123552 / 一对1098240 / 高牌1302540 —— 九个数必须与组合数学结果**精确相等** |
-| 德州胜率 | 按牌型花色平均后 AA vs KK 实测 81.90%（公开引用 81.9%）、AKs vs QQ 46.0% |
-| 21点 | 不内置策略表，从规则递归算 EV。用基本策略打完整局的整体期望：S17+DAS −0.570%、H17 −0.789%、21点只赔6:5 −1.923%，与公开的庄家优势一致 |
-| 24点 | 1..13 四张牌共 C(16,4)=1820 组，可解 **1362** 组（74.8%），与公开常引用的数字一致 |
-| 吹牛骰子 | 「这注成立」是精确二项尾概率，用 40 万次蒙特卡洛逐例校验到小数点后三位 |
+| Hold'em evaluator | All C(52,5) = 2,598,960 five-card hands enumerated. The nine category counts must **exactly** equal the combinatorial results: 40 straight flushes, 624 quads, 3,744 full houses, 5,108 flushes, 10,200 straights, 54,912 trips, 123,552 two pair, 1,098,240 one pair, 1,302,540 high card |
+| Hold'em equity | Suit-averaged AA vs KK measures **81.90%** against the published 81.9%; AKs vs QQ measures 46.0% |
+| Blackjack | No built-in strategy chart — EV is computed recursively from the rules. Playing basic strategy end to end yields **−0.570%** (S17 + DAS), **−0.789%** (H17), **−1.923%** (6:5 blackjack), all matching the published house edges |
+| 24 Game | **1,362** of the 1,820 four-card multisets from 1–13 are solvable, matching the commonly cited figure |
+| Liar's Dice | "This bid holds" is an exact binomial tail, cross-checked case by case against 400k Monte Carlo trials to three decimal places |
 
-### 闸门必须被证明会响
+### Gates have to be proven to fire
 
-全绿不代表在验东西。每一层都配了故障注入：往引擎里注入具体错误，**确认对应的测试真的会失败**。
+All-green means nothing if the tests can't fail. Every layer ships with fault
+injection: a specific bug is written into the engine and the matching test is
+required to break.
 
 ```
-单元断言       395   node test/verify-{dice,24,holdem,blackjack}.js
-故障注入        78   node test/fault-{inject,24,holdem,blackjack}.js   0 漏网
-真浏览器       184   python3 test/browser.py      （含数字对账、触控目标、离线）
-线上匿名        17   python3 test/live-smoke.py   （含断网离线实测）
-拇指可达性           python3 test/thumb-reach.py [宽 高]
+395  unit assertions          node test/verify-{dice,24,holdem,blackjack}.js
+ 78  fault injections         node test/fault-{inject,24,holdem,blackjack}.js   0 escapes
+184  real-browser assertions  python3 test/browser.py       (number reconciliation, tap targets, offline)
+ 17  anonymous live checks    python3 test/live-smoke.py    (including a real offline test)
+     thumb reachability       python3 test/thumb-reach.py [w h]
 ```
 
-`./build.sh` 先跑全部闸门，**任一不过就不产出 `site/index.html`**。node 里测过的字节原样内联进 HTML（字面替换，不走正则），所以不存在"验了 A 发了 B"。
+`./build.sh` runs every gate first and **refuses to emit `site/index.html` if
+any of them fails**. The bytes tested under node are inlined into the HTML
+verbatim (literal substitution, no regex), so there is no "verified A, shipped B".
 
-### 被外部评审攻过八轮
+### Eight rounds of adversarial external review
 
-`reviews/` 里是完整记录：两个独立评审（一个只审数学、一个只审交互）来回八轮，报了 20+ 条问题，**每一条我都独立复现过，没有一条误报**。
+`reviews/` holds the complete record: two independent reviewers — one auditing
+only the math, one only the interaction — went eight rounds and filed 20+
+findings. **Every single one reproduced; none was a false positive.**
 
-它们抓到的东西里，最有价值的不是"算错了"，而是"**测试因为错误的原因通过了**"：
+The most valuable findings weren't "the math is wrong." They were **"the test
+passed for the wrong reason"**:
 
-- 闸门测的是自己重算的公式，不是生产代码走的那条路 —— 改真实路径它不响
-- 闸门扫的是 `NaN|undefined|Infinity`，而真实症状是 `±—` 加一句虚报的次数，症状不在扫描列表里
-- 闸门把一个**事实错误**固化进了测试（断言某局面必须显示"叫到顶"，而它其实还有 8 个合法叫法）
+- A gate re-implemented the elimination formula instead of exercising the
+  production path — mutating the real code left it green.
+- A gate scanned for `NaN|undefined|Infinity` while the actual symptom was
+  `±—` next to a fabricated simulation count. The symptom wasn't in the list.
+- A gate froze a **factual error** into an assertion: it demanded that a
+  position display "no legal raise left" when the rules still permitted eight.
 
-这类缺陷靠自己读代码基本发现不了，因为写测试的人和写代码的人有同一套盲区。
+That class of defect is nearly impossible to find alone, because whoever wrote
+the test and whoever wrote the code share the same blind spots.
 
 ---
 
-## 跑起来
+## Running it
 
 ```bash
-node --version            # 需要 Node 18+
-pip install playwright && playwright install chromium   # 浏览器测试用
+node --version                                            # Node 18+
+pip install playwright && playwright install chromium     # for browser tests
 
-./build.sh                # 跑全部闸门 → 产出 site/
+./build.sh                                                # runs all gates, emits site/
 python3 -m http.server 8000 --directory site
 ```
 
-### 各层测试
+### The test layers
 
 ```bash
-node test/verify-dice.js          # 吹牛骰子引擎
-node test/verify-holdem.js        # 德州（含 C(52,5) 全域普查）
-node test/verify-blackjack.js     # 21点（含 40 万手蒙特卡洛对账）
-node test/verify-24.js            # 24点（含 1820 组全域普查）
+node test/verify-dice.js          # liar's dice engine
+node test/verify-holdem.js        # hold'em (includes the full C(52,5) census)
+node test/verify-blackjack.js     # blackjack (includes a 400k-hand MC reconciliation)
+node test/verify-24.js            # 24 game (includes the full 1,820-set census)
 
-node test/fault-inject.js         # 故障注入：证明上面的闸门会响
+node test/fault-inject.js         # fault injection: proves the gates above fire
 node test/fault-holdem.js
 node test/fault-blackjack.js
 node test/fault-24.js
 
-python3 test/browser.py           # 真浏览器：点击流 + 数字对账 + 几何断言
-python3 test/live-smoke.py [url]  # 线上匿名验收（含断网离线）
-python3 test/thumb-reach.py 375 667   # 拇指可达性
+python3 test/browser.py           # real browser: click-throughs, number reconciliation, geometry
+python3 test/live-smoke.py [url]  # anonymous production check (includes offline)
+python3 test/thumb-reach.py 375 667
 ```
 
-### 性能与策略测量（非通过/失败）
+### Measurement, not pass/fail
 
 ```bash
-node test/robustness.js       # 拿三种机制不同的局外对手测策略强度
-node test/ranker-split.js     # 排序器按人数分界的证据表
-node test/band-safety.js      # 淘汰带宽的全域安全扫描
-node test/calibrate.js        # 参数标定
+node test/robustness.js       # strategy strength against three structurally different opponents
+node test/ranker-split.js     # evidence table behind the per-player-count ranker split
+node test/band-safety.js      # global safety sweep of the elimination band
+node test/calibrate.js        # parameter calibration
 ```
 
 ---
 
-## 设计上几个非显然的决定
+## A few non-obvious design decisions
 
-**吹牛骰子的排序器按人数分界**：`N≥3` 用 rollout（把这一轮用建模的对手真打完），`N=2` 用两步前瞻模型。这不是设计出来的，是量出来的 —— 单挑时 rollout 对 5 种对手全输给 2-ply，试了五档参数都救不回来。证据表在 `test/ranker-split.js`。
+**The liar's dice ranker splits on player count.** `N ≥ 3` uses a rollout —
+freeze the bid and play the round out against modelled opponents. `N = 2` uses
+a two-ply lookahead model instead. This wasn't designed, it was measured: heads
+up, the rollout lost to the two-ply model against all five opponent types, and
+five different tunings failed to rescue it. The evidence table lives in
+`test/ranker-split.js`.
 
-**淘汰只按噪声带砍，绝不按名次砍**：粗筛样本少、噪声大，真最优完全可能因为噪声排到第 5。按名次留前 N 会把它永久淘汰 —— 外部评审两次找到这样的反例。现在带宽随轮次收窄（4.5σ→3.5σ→3.0σ），全域扫描 17850 次检查 0 次砍掉真最优。
+**Elimination cuts by noise band, never by rank.** Coarse rounds have few
+samples and lots of noise; the true optimum can easily land fifth. Keeping "the
+top N" therefore discards it permanently — external review found two such
+counterexamples. Bands now narrow as samples grow (4.5σ → 3.5σ → 3.0σ), and a
+global sweep of 17,850 first-round eliminations never dropped the true optimum.
 
-**「这注成立」是精确概率，「本轮不喝」是模拟值**，两者在界面上分开标注，模拟值附 95% 置信区间。非绝对确定时永远不显示 100%/0% —— 99.66% 四舍五入成"100%"在赌桌上是会让人输钱的谎。
+**"This bid holds" is exact; "you don't drink this round" is simulated.** The
+two are labelled differently in the UI and the simulated one carries a 95%
+confidence interval. Nothing ever displays 100% or 0% unless it is genuinely
+certain — rounding 99.66% up to "100%" is the kind of lie that costs someone
+money at a table.
 
-**24点用精确有理数**：但实测发现这在 4 张 1..13 的范围内是防御性的而非救命的 —— 不存在落在 24±0.001 内却不等于 24 的表达式值。这条写进代码注释了，免得下次又想当然。
+**The 24 solver uses exact rationals** — but measurement showed this is
+belt-and-braces rather than load-bearing for four cards from 1–13: no
+expression value lands within 24 ± 0.001 without being exactly 24. That's
+written into the source comment so nobody re-derives the wrong conclusion.
 
 ---
 
-## 结构
+## Layout
 
 ```
-src/engine-dice.js        吹牛骰子：二项分布 + rollout + 逐轮淘汰
-src/engine-holdem.js      德州：5张/7张评牌 + 蒙特卡洛胜率
-src/engine-blackjack.js   21点：从规则递归算 EV
-src/engine-24.js          24点：精确有理数穷举
-src/app-shell.html        外壳 + 全部样式
-src/app.js                路由 + 四个工具的界面
-build.sh                  闸门 → 内联引擎 → 产出 site/
-test/                     四层测试
-reviews/                  八轮外部评审的完整记录
+src/engine-dice.js        liar's dice: binomial + rollout + successive elimination
+src/engine-holdem.js      hold'em: 5- and 7-card evaluators + Monte Carlo equity
+src/engine-blackjack.js   blackjack: EV computed recursively from the rules
+src/engine-24.js          24 game: exact-rational exhaustive search
+src/app-shell.html        shell + all styling
+src/app.js                router + the four tool UIs
+build.sh                  gates → inline engines → emit site/
+test/                     the four test layers
+reviews/                  the full record of eight external review rounds
 ```
 
-## 部署
+## Deploying
 
 ```bash
-set -a; source ~/.claude/.env; set +a
-export CLOUDFLARE_API_TOKEN=$CF_API_TOKEN CLOUDFLARE_ACCOUNT_ID=<your-account-id>
+export CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=...
 NODE_OPTIONS="--require $PWD/force-ipv4.js" \
   npx wrangler pages deploy site --project-name bar-tools --branch main --commit-dirty=true
-python3 test/live-smoke.py     # 部署后必跑
+python3 test/live-smoke.py     # always run after deploying
 ```
 
-`force-ipv4.js` 是绕本机 IPv6 黑洞的猴补丁（wrangler/undici 会优先走 IPv6，不加会 `fetch failed`）。
+`force-ipv4.js` is a monkey patch around an IPv6 black hole on the build
+machine — wrangler/undici prefers IPv6 and fails with `fetch failed` without it.
 
 ## License
 
