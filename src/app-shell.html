@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<title>酒桌工具箱</title>
+<meta name="description" content="酒桌上用得着的算牌工具：吹牛骰子胜率、德州扑克胜率、21点最优决策、24点求解。全部离线可用。">
+<meta name="theme-color" content="#0b0d12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="酒桌">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" href="/icon-192.png">
+<style>
+:root{
+  --bg:#0b0d12; --card:#151a24; --card2:#1b212d; --line:#262e3d;
+  --fg:#e9edf5; --dim:#828fa3;
+  --open:#ff6152; --raise:#28d492; --gold:#f6c453; --blue:#5aa9ff; --purple:#b98cff;
+  --r:14px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  font-size:16px; line-height:1.45;
+  padding:0 12px calc(28px + env(safe-area-inset-bottom));
+  max-width:520px; margin:0 auto;
+  overscroll-behavior-y:none; font-variant-numeric:tabular-nums;
+}
+header{display:flex;align-items:center;gap:8px;padding:calc(8px + env(safe-area-inset-top)) 2px 6px;min-height:52px}
+h1{font-size:17px;margin:0;font-weight:650;letter-spacing:.3px;flex:1;min-width:0;
+   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+h1 span{color:var(--dim);font-weight:400;font-size:12.5px;margin-left:6px}
+.back{display:flex;align-items:center;justify-content:center;width:44px;height:44px;margin-left:-10px;
+  color:var(--gold);font-size:22px;cursor:pointer;flex:0 0 auto;background:none;border:none;font-family:inherit}
+.hbtn{flex:0 0 auto;padding:0 14px;min-height:40px;background:var(--card);border:1px solid var(--line);
+  border-radius:11px;color:var(--fg);font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer}
+.hbtn.on{background:var(--gold);border-color:var(--gold);color:#171310}
+
+/* ── 首页 ── */
+.hero{padding:8px 2px 4px}
+.hero h2{font-size:26px;margin:0 0 4px;font-weight:750;letter-spacing:.5px}
+.hero p{color:var(--dim);font-size:13.5px;margin:0}
+.menu{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
+.tile{
+  background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 12px 12px;
+  cursor:pointer;text-align:left;color:var(--fg);font-family:inherit;position:relative;overflow:hidden;
+  min-height:118px;display:flex;flex-direction:column;justify-content:flex-end;
+  transition:transform .1s,border-color .1s;
+}
+.tile:active{transform:scale(.96)}
+.tile .ic{font-size:30px;line-height:1;margin-bottom:auto;font-weight:800;letter-spacing:-1px}
+.tile .nm{font-size:17px;font-weight:700;margin-top:8px}
+.tile .ds{font-size:11.5px;color:var(--dim);line-height:1.4;margin-top:3px;min-height:32px}
+.t-dice .ic{color:var(--gold)} .t-holdem .ic{color:var(--raise)}
+.t-bj .ic{color:var(--open)} .t-p24 .ic{color:var(--blue)}
+.t-holdem .ic{letter-spacing:0}
+.tile::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px}
+.t-dice::after{background:var(--gold)}
+.t-holdem::after{background:var(--raise)}
+.t-bj::after{background:var(--open)}
+.t-p24::after{background:var(--blue)}
+
+/* ── 通用控件 ── */
+.sec{margin:12px 0 0}
+.lab{display:flex;align-items:baseline;justify-content:space-between;font-size:12.5px;color:var(--dim);margin:0 2px 6px;letter-spacing:.4px}
+.lab b{color:var(--fg);font-weight:600;font-size:12.5px}
+.lab .act{color:var(--gold);font-size:12.5px;padding:11px 12px;margin:-11px -12px;cursor:pointer;display:inline-flex;align-items:center;min-height:44px}
+.row{display:flex;gap:6px}
+.pill{flex:1;min-width:0;min-height:44px;background:var(--card);border:1px solid var(--line);border-radius:11px;
+  color:var(--fg);font-size:16px;font-weight:600;font-family:inherit;display:flex;align-items:center;justify-content:center;
+  cursor:pointer;transition:background .09s,border-color .09s,transform .09s}
+.pill:active{transform:scale(.94)}
+.pill.on{background:var(--gold);border-color:var(--gold);color:#171310}
+.pill.sm{min-height:40px;font-size:14px}
+.grid6{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+.grid7{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+.tray{display:flex;gap:6px;align-items:center;background:var(--card);border:1px solid var(--line);
+  border-radius:var(--r);padding:8px;min-height:60px;flex-wrap:wrap}
+.tray.empty{justify-content:center;color:var(--dim);font-size:13.5px}
+.hint{color:var(--gold);font-size:13.5px;text-align:center;padding:22px 10px;background:var(--card);
+  border:1px dashed var(--line);border-radius:var(--r);margin-top:14px;line-height:1.6}
+.note{color:var(--dim);font-size:11.5px;line-height:1.65;margin:14px 2px 0}
+.note b{color:#9aa7bb;font-weight:600}
+details.note summary{cursor:pointer;color:var(--gold);font-size:12px;padding:8px 0;list-style:none;min-height:36px}
+details.note summary::-webkit-details-marker{display:none}
+details.note summary::after{content:" ▾"} details.note[open] summary::after{content:" ▴"}
+
+/* ── 结论卡 ── */
+.verdict{margin-top:14px;border-radius:16px;padding:14px 14px 12px;background:var(--card);
+  border:1px solid var(--line);position:relative;overflow:hidden}
+.verdict::before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:var(--gold)}
+.verdict.open::before{background:var(--open)}
+.verdict.raise::before{background:var(--raise)}
+.verdict.info::before{background:var(--blue)}
+.vact{font-size:29px;font-weight:750;letter-spacing:.5px;line-height:1.15}
+.verdict.open .vact{color:var(--open)}
+.verdict.raise .vact{color:var(--raise)}
+.verdict.info .vact{color:var(--blue)}
+.vact.formula{font-size:23px;line-height:1.3;word-break:break-word;letter-spacing:0}
+@media (min-width:400px){ .vact.formula{font-size:26px} }
+.vact .dice{display:inline-flex;gap:3px;vertical-align:-6px;margin-left:2px}
+.vact .dice svg{width:30px;height:30px}
+.vwhy{color:var(--dim);font-size:13.5px;margin-top:7px;line-height:1.55}
+.vwhy b{color:var(--fg);font-weight:650}
+.vstats{display:flex;gap:8px;margin-top:11px}
+.stat{flex:1;background:var(--card2);border-radius:10px;padding:7px 9px;min-width:0}
+.stat .k{font-size:10.5px;color:var(--dim);letter-spacing:.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat .v{font-size:19px;font-weight:700;margin-top:1px}
+
+/* ── 列表 ── */
+.alts{margin-top:10px;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.alt{display:flex;align-items:center;gap:9px;padding:9px 11px;border-top:1px solid var(--line);background:var(--card)}
+.alt:first-child{border-top:none}
+.alt .nm{display:flex;align-items:center;gap:5px;font-size:15px;font-weight:600;min-width:92px}
+.alt .nm svg{width:20px;height:20px}
+.alt .nm.open{color:var(--open)}
+.alt .bar{flex:1;height:7px;background:#0e1219;border-radius:4px;overflow:hidden;min-width:24px}
+.alt .bar i{display:block;height:100%;background:var(--raise);border-radius:4px}
+.alt.o .bar i{background:var(--open)}
+.alt .pc{font-size:14px;font-weight:650;width:52px;text-align:right;color:var(--dim)}
+.alt.top .pc{color:var(--fg)}
+
+/* ── 骰子专用 ── */
+.slot{width:42px;height:42px;flex:0 0 auto;border-radius:9px;cursor:pointer;transition:transform .09s}
+.slot:active{transform:scale(.9)}
+.pad{display:flex;gap:6px;margin-top:6px}
+.pad button{flex:1;min-width:0;padding:7px 0;min-height:52px;background:var(--card);border:1px solid var(--line);
+  border-radius:11px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .09s,transform .09s}
+.pad button:active{transform:scale(.92);background:var(--card2)}
+.pad button.wide{flex:1;min-height:52px;font-family:inherit;font-size:15.5px;font-weight:600;color:var(--gold);background:#1d1a12;border:1px solid #3a3320}
+.pad svg{width:34px;height:34px}
+.strip{display:flex;gap:6px;overflow-x:auto;padding:2px 2px 8px;scroll-snap-type:x proximity;
+  -webkit-overflow-scrolling:touch;scrollbar-width:none;
+  -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 14px,#000 calc(100% - 14px),transparent 100%);
+  mask-image:linear-gradient(90deg,transparent 0,#000 14px,#000 calc(100% - 14px),transparent 100%)}
+.strip::-webkit-scrollbar{display:none}
+.strip button{flex:0 0 auto;width:46px;height:46px;scroll-snap-align:center;background:var(--card);
+  border:1px solid var(--line);border-radius:11px;color:var(--fg);font-size:17px;font-weight:600;
+  font-family:inherit;cursor:pointer;transition:transform .09s}
+.strip button:active{transform:scale(.9)}
+.strip button.on{background:var(--gold);border-color:var(--gold);color:#171310}
+.strip button.hot{border-color:#3a4759;color:#cdd6e4}
+
+/* ── 扑克牌 ── */
+.pcard{display:inline-flex;align-items:center;justify-content:center;flex-direction:column;
+  width:40px;height:54px;border-radius:7px;background:#f2f4f8;color:#171310;font-weight:800;
+  font-size:19px;line-height:1;cursor:pointer;flex:0 0 auto;border:1px solid #c9cfda;transition:transform .09s}
+.pcard:active{transform:scale(.92)}
+.pcard.red{color:#d8232a}
+.pcard .s{font-size:14px;margin-top:2px;font-weight:700}
+.pcard.ph{background:transparent;border:1px dashed var(--line);color:var(--dim);font-size:11px;font-weight:500}
+/* 选牌键盘吸底：德州录完手牌后结论卡会把键盘顶出首屏（实测掉到 710px，
+   而 iPhone SE 只有 667px），继续录公共牌得先滚一下。吸底后永远落在拇指区。
+   用 fixed 不用 sticky —— sticky bottom:0 会把元素从自然位置往上提，
+   提上去就盖住前面的内容（实测把结论卡压掉 7px，文字被拦腰切断）。
+   fixed + 由 JS 给 body 补等高的 padding-bottom，才不会遮挡。 */
+.dock{position:fixed;left:0;right:0;bottom:0;max-width:520px;margin:0 auto;
+  z-index:5;background:var(--bg);border-top:1px solid var(--line);
+  padding:8px 12px calc(6px + env(safe-area-inset-bottom))}
+.dock .lab{margin-top:2px}
+/* 键盘上沿加一道渐隐：内容滑到它底下时读起来是"还能往下滚"，
+   而不是"这行字被切坏了"。没有它的时候备选列表会在半行处被硬生生截断。 */
+.dock::before{content:"";position:absolute;left:0;right:0;top:-22px;height:22px;
+  pointer-events:none;background:linear-gradient(to bottom,rgba(11,13,18,0),var(--bg))}
+.suits{display:flex;gap:6px;margin-bottom:6px}
+.suits button{flex:1;min-height:46px;background:var(--card);border:1px solid var(--line);border-radius:11px;
+  font-size:22px;color:#e9edf5;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center}
+.suits button.red{color:#ff6b70}
+.suits button.on{background:#f2f4f8;border-color:#f2f4f8;color:#171310}
+.suits button.on.red{color:#d8232a}
+.ranks{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+.ranks button{min-height:44px;background:var(--card);border:1px solid var(--line);border-radius:10px;
+  color:var(--fg);font-size:15.5px;font-weight:700;font-family:inherit;cursor:pointer;transition:transform .09s}
+.ranks button:active{transform:scale(.9)}
+.ranks button[disabled]{opacity:.22}
+.sols{margin-top:10px;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;max-height:46vh;overflow-y:auto}
+.sol{padding:11px 13px;border-top:1px solid var(--line);background:var(--card);font-size:16.5px;
+  font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:.3px}
+.sol:first-child{border-top:none}
+.sol b{color:var(--blue)}
+@media (min-width:430px){ .pad svg{width:38px;height:38px} .vact{font-size:32px} .tile{min-height:126px} }
+</style>
+</head>
+<body>
+<header>
+  <button class="back" id="back" style="display:none" aria-label="返回">‹</button>
+  <h1 id="title">酒桌工具箱</h1>
+  <button class="hbtn" id="hbtn" style="display:none"></button>
+</header>
+<main id="view"></main>
+
+<script>/*__ENGINE_DICE__*/</script>
+<script>/*__ENGINE_24__*/</script>
+<script>/*__ENGINE_HOLDEM__*/</script>
+<script>/*__ENGINE_BJ__*/</script>
+<script>/*__APP__*/</script>
+</body>
+</html>

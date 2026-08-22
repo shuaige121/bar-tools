@@ -1,0 +1,137 @@
+require('./fault-runner.js')('../src/engine-dice.js', 'verify-dice.js', [
+  ['飞模式概率写成 1/6（忘了1是万能）',
+   'return face === 1 ? 1 / 6 : 2 / 6;', 'return 1 / 6;'],
+  ['myCount 不把万能1算进去',
+   "else if (wild && face !== 1 && hand[i] === 1) c++;", ''],
+  ['binomGE 差一错误（从 r+1 起算）',
+   'for (var k = r; k <= n; k++) s += binomPMF(n, k, p);',
+   'for (var k = r + 1; k <= n; k++) s += binomPMF(n, k, p);'],
+  ['飞→斋 下限用 floor 而非 ceil',
+   'for (c = Math.ceil(bid.count / 2); c <= T; c++) push(c, 1);',
+   'for (c = Math.floor(bid.count / 2); c <= T; c++) push(c, 1);'],
+  ['斋→飞 下限写成 2x 而非 2x+1',
+   'for (c = 2 * bid.count + 1; c <= T; c++) push(c, f);',
+   'for (c = 2 * bid.count; c <= T; c++) push(c, f);'],
+  ['未知骰数忘了减去我已知的手牌',
+   'var U = N * dpp - hand.length;', 'var U = N * dpp;'],
+  ['evRaise 的"其余骰"重复计入下家那手',
+   'var nOthers = N * dpp - hand.length - dpp;', 'var nOthers = N * dpp - hand.length;'],
+  ['下家的未知骰算成全场（以为他什么都不知道）',
+   'var unknownToB = N * dpp - dpp;', 'var unknownToB = N * dpp;'],
+  ['截断值 cont 写成 1（加注永远无损）',
+   'var cont = (opt.cont != null) ? opt.cont : contFor(N);', 'var cont = 1;'],
+  ['cont 标定表被清空（丢失实测标定）',
+   'var CONT = { 2: 0.70, 3: 0.50, 4: 0.50, 5: 0.55, 6: 0.70, 7: 0.75, 8: 0.70 };',
+   'var CONT = {};'],
+  ['下家开牌方向反了（越可能真越想开）',
+   'return 1 / (1 + Math.exp((pB - opt.tau) / opt.soft));',
+   'return 1 / (1 + Math.exp((opt.tau - pB) / opt.soft));'],
+  ['同点数加注允许持平（漏了严格递增）',
+   'if (c > bid.count || f > bid.face) push(c, f);',
+   'if (c > bid.count || f >= bid.face) push(c, f);'],
+  ['开的胜率写成 pTrue（正反颠倒）',
+   "challenge = { kind: 'challenge', ev: 1 - pTrue, pBidTrue: pTrue, exact: true };",
+   "challenge = { kind: 'challenge', ev: pTrue, pBidTrue: pTrue, exact: true };"],
+
+  // ── 以下针对取代了常数截断值的 rollout ──
+  ['rollout 判负反了（叫牌为真时反而算叫的人输）',
+   'loser = (actual >= curBid.count) ? cur : prev;             // 叫牌为真 → 开的人喝',
+   'loser = (actual >= curBid.count) ? prev : cur;'],
+  ['rollout 统计的是"我喝了"而不是"我没喝"',
+   'if (loser !== 0) alive++;', 'if (loser === 0) alive++;'],
+  ['发牌忘了给 hero 补发未输入的骰子（总骰数少算）',
+   'for (i = hand.length; i < dpp; i++) { d = 1 + (rnd() * 6 | 0); hands[0].push(d); all.push(d); }',
+   'for (i = dpp; i < dpp; i++) { d = 1 + (rnd() * 6 | 0); hands[0].push(d); all.push(d); }'],
+  ['发牌把某个对手漏掉（少一手）',
+   'for (i = 1; i < N; i++) {\n      var h = [];',
+   'for (i = 2; i < N; i++) {\n      var h = [];'],
+  ['发牌覆盖掉 hero 已经输入的骰子',
+   'var hands = [hand.slice()], all = hand.slice(), i, j, d;',
+   'var hands = [[]], all = [], i, j, d;'],
+  ['rollout 里对手一律不开（永远轮不到结算）',
+   'if (bid && subj(bid, hand) < tau) return null;                 // null = 开',
+   'if (false) return null;'],
+  ['最终排序退回用 2-ply 分数而不是 rollout 结果',
+   'ev: sims > 0 ? rolloutEV(c.bid, hand, N, wild, dpp, simsFinal, seed ^ 0x5bf03635) : c.coarse,',
+   'ev: evRaise(c.bid, hand, N, wild, dpp, tune).ev,'],
+  ['淘汰退回用有偏的 2-ply 分数（会淘汰真正最优的动作）',
+   'surv[i].coarse = rolloutEV(surv[i].bid, hand, N, wild, dpp, rs2, seed + ri * 7919);',
+   'surv[i].coarse = evRaise(surv[i].bid, hand, N, wild, dpp, tune).ev;'],
+  ['淘汰退回按名次砍（留前 2）——外部评审两次抓到的正是这个',
+   `          for (i = 0; i < lst.length; i++) if (lst[i].coarse >= top - bands[ri] * se) next.push(lst[i]);`,
+   `          lst.sort(function(x,y){return y.coarse-x.coarse;}); for (i = 0; i < Math.min(2,lst.length); i++) next.push(lst[i]);`],
+  ['淘汰带宽收窄到 0.5σ（把统计上打平的也砍掉）',
+   'if (lst[i].coarse >= top - bands[ri] * se) next.push(lst[i]);',
+   'if (lst[i].coarse >= top - 0.5 * se) next.push(lst[i]);'],
+  ['带宽退回全程 3σ（外部评审的 seed=2111 会砍掉真最优）',
+   'var ELIM_COARSE = 350, ELIM_BANDS = [4.5, 3.5, 3.0];',
+   'var ELIM_COARSE = 350, ELIM_BANDS = [3.0, 3.0, 3.0];'],
+  ['首轮样本降回 250 且带宽收回 3σ（外部评审 seed=2111 的原始配置）',
+   'var ELIM_COARSE = 350, ELIM_BANDS = [4.5, 3.5, 3.0];',
+   'var ELIM_COARSE = 250, ELIM_BANDS = [3.0, 3.0, 3.0];'],
+  // 外部评审指出的闸门缺陷：只改**真实淘汰路径**、保持 ELIM 导出值不变。
+  // 从 E.ELIM 重算公式的那种闸门对此是瞎的，必须靠黑盒经过 analyze() 的断言。
+  ['真实淘汰退回 250+3σ 但 ELIM 导出值不变（闸门若只重算公式就抓不到）',
+   'var surv = [], rounds = [coarse, coarse * 4, coarse * 16], bands = ELIM_BANDS;',
+   'coarse = 250; var surv = [], rounds = [coarse, coarse * 4, coarse * 16], bands = [3.0, 3.0, 3.0];'],
+  ['叫到顶时虚报模拟次数（决赛圈为空却说跑了 N 遍）',
+   'sims: finalists.length ? simsFinal : 0,', 'sims: simsFinal,'],
+  ['legalCount 报成候选数（把"还能叫但不值得"误判成"叫到顶"）',
+   'legalCount: legalCount,', 'legalCount: cands.length,'],
+  ['legalCount 恒报 0（所有无候选局面都被说成叫到顶）',
+   'var legalCount = legalRaises(bid, N, wild, dpp).length;', 'var legalCount = 0;'],
+  ['legalCount 只在 rollout 分支算（2人局拿不到，会漏三态）',
+   'var legalCount = legalRaises(bid, N, wild, dpp).length;',
+   'var legalCount = (N >= 3) ? legalRaises(bid, N, wild, dpp).length : 0;'],
+  ['精算样本不再自适应（固定 1500，分不开 2pp 的差距）',
+   `    var simsFinal = sims > 0
+      ? Math.max(sims, Math.min(6000, Math.round(FINAL_BUDGET / Math.max(1, finalists.length))))
+      : 0;`,
+   `    var simsFinal = sims;`],
+  ['N=2 的 pTrueIfChallenged 换回 rollout 桌（与它的 2-ply EV 错配）',
+   'pTrueIfChallenged: st.pTrueIfChallenged,',
+   'pTrueIfChallenged: immediateStats(c.bid, hand, N, wild, dpp).pTrueIfChallenged,'],
+  ['候选集又按个数排名截断（8人局够不到合理叫数）',
+   `    for (i = 0; i < all.length; i++)
+      if (pBidTrue(all[i], hand, N, wild, dpp) >= CAND_PTRUE_FLOOR) out.push(all[i]);`,
+   `    var byF = {};
+    for (i = 0; i < all.length; i++) {
+      var rr = all[i], ll = byF[rr.face] || (byF[rr.face] = []);
+      if (ll.length >= 8) continue;
+      ll.push(rr); out.push(rr);
+    }`],
+  ['精算复用淘汰阶段的随机流（winner\u2019s curse）',
+   'ev: sims > 0 ? rolloutEV(c.bid, hand, N, wild, dpp, simsFinal, seed ^ 0x5bf03635) : c.coarse,',
+   'ev: sims > 0 ? rolloutEV(c.bid, hand, N, wild, dpp, simsFinal, seed) : c.coarse,'],
+  ['hero 后续又能看见补出来的未知骰（strategy fusion）',
+   'var visible = (cur === 0) ? hand : hands[cur];', 'var visible = hands[cur];'],
+  ['barMove 不再按"加幅小优先、同加幅按手上多"排序',
+   `    rs.sort(function (a, b) {
+      return (a.count - b.count) || (myCount(hand, b.face, wild) - myCount(hand, a.face, wild));
+    });`, ''],
+  ['barMove 只删掉次级比较（外部评审证明这条曾经漏网）',
+   'return (a.count - b.count) || (myCount(hand, b.face, wild) - myCount(hand, a.face, wild));',
+   'return (a.count - b.count);'],
+  ['展示字段整体退回旧的固定-tau logistic',
+   `      var st = sims > 0 ? immediateStats(c.bid, hand, N, wild, dpp)
+                        : evRaise(c.bid, hand, N, wild, dpp, tune);`,
+   '      var st = evRaise(c.bid, hand, N, wild, dpp, tune);'],
+  ['只把 pTrueIfChallenged 换回旧模型（外部评审证明这条曾经漏网）',
+   'pTrueIfChallenged: st.pTrueIfChallenged,',
+   'pTrueIfChallenged: evRaise(c.bid, hand, N, wild, dpp, tune).pTrueIfChallenged,'],
+  ['N=2 也用 rollout 桌的字段（与它的 2-ply EV 错配）',
+   `      var st = sims > 0 ? immediateStats(c.bid, hand, N, wild, dpp)
+                        : evRaise(c.bid, hand, N, wild, dpp, tune);`,
+   '      var st = immediateStats(c.bid, hand, N, wild, dpp);'],
+  // 已移除：'guard 触顶被当成 hero 没喝'。这条注入不可观测 —— 叫牌严格递增且个数上限是
+  // 总骰数，循环必然收敛（实测最长 7 步、20000 局 0 次触顶），那个分支到不了。
+  // 它是防御性的：真触顶要保守计成 hero 喝而不是静默抬高。
+  // 测试里用 guardHits()===0 守住"确实到不了"这个前提。
+  ['排序器分界写错：所有人数都退回 2-ply（三人局的错排会回来）',
+   'var useRollout = opts.useRollout != null ? opts.useRollout : (N >= 3);',
+   'var useRollout = opts.useRollout != null ? opts.useRollout : false;'],
+  // 已移除：'共同随机数(CRN)被破坏'。实测不可观测 —— 换 120 个主种子重跑，
+  // 破坏 CRN 前后首选稳定度都是 98%，连首选分布都完全相同。
+  // CRN 在原理上是对的（配对比较方差更小）且不花钱，所以保留；
+  // 但既然量不出差别，就不该写一条永远不会响的测试来凑绿。
+]);

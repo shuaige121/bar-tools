@@ -1,0 +1,13 @@
+# 构建产物：./build.sh 会重新生成（且只有跑完全部闸门才会产出）
+site/
+
+# 测试产物
+shots/
+*.bak
+.fault-injection.lock
+
+# 工具缓存
+.wrangler/
+node_modules/
+.DS_Store
+.logs/
