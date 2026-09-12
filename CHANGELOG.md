@@ -13,3 +13,7 @@
 - Recover an interrupted dice mutation; run future fault injections only in disposable copies.
 
 See the README for model limits, wage coverage and validation commands.
+
+Validation: 395 engine assertions, 78 caught mutations, 251 browser assertions,
+20 responsive flows, 3 PWA-update checks and 28 production checks passed.
+See [release verification](docs/RELEASE-2026-09-12.md) for deployment evidence.
