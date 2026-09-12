@@ -11,3 +11,9 @@ shots/
 node_modules/
 .DS_Store
 .logs/
+
+# Local browser sessions and verification artifacts
+.playwright-cli/
+output/
+__pycache__/
+*.pyc

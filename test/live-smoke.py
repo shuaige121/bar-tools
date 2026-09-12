@@ -21,6 +21,11 @@ with sync_playwright() as pw:
     print(f"\n线上冒烟 {BASE}")
     pg.goto(BASE, wait_until="networkidle", timeout=30000)
     ok("首页 4 个入口", pg.locator(".tile").count() == 4)
+    ok("新版教育定位已上线", "作者本人不赌博" in pg.inner_text(".purpose"))
+    geo = pg.locator('.menu').bounding_box()
+    ok("手机首页四入口完整可见", geo['y'] + geo['height'] <= 667)
+    ok("每游戏括号标注在", pg.locator('.tile .ex').count() == 4)
+    ok("线上时薪成本计已显示", "时间成本 S$" in pg.inner_text('#timecost'))
 
     # 骰子：走一个真实场景，确认线上算出来的数跟本地一致
     pg.click('.tile[data-go="dice"]'); pg.wait_for_timeout(250)
@@ -57,6 +62,16 @@ with sync_playwright() as pw:
     pg.wait_for_timeout(350)
     ok("21点：A,A 对庄 6 → 分牌", pg.inner_text(".vact") == "分牌", pg.inner_text(".vact"))
     pg.screenshot(path="shots/live_bj.png")
+    pg.fill('#cash', '1000')
+    text = pg.inner_text('#netcost')
+    nums = re.findall(r'S\$([0-9]+\.[0-9]{2})', text)
+    ok("线上收益真正减去时间工资", len(nums) == 3 and abs(float(nums[2]) - float(nums[1]) - 5.70) < 0.011 and '净收益 −S$' in text, text)
+    pg.select_option('#ev-rule', '0.01923')
+    ok("线上6:5规则更新收益", "游戏期望收益 −S$19.23" in pg.inner_text('#netcost'))
+    pg.click('#back')
+    ok("返回后最近使用排第一", pg.locator('.tile').first.get_attribute('data-go') == 'bj')
+    pg.reload(wait_until='networkidle')
+    ok("刷新保留最近使用排序", pg.locator('.tile').first.get_attribute('data-go') == 'bj')
 
     pg.goto(BASE + "/#p24", wait_until="networkidle"); pg.wait_for_timeout(250)
     pg.click("#clr")
@@ -94,6 +109,18 @@ with sync_playwright() as pw:
         for n in [1,2,3,4]: pg.click(f'#pad button[data-v="{n}"]')
         pg.wait_for_timeout(350)
         ok("断网后 24点 仍能求解", "= 24" in pg.inner_text(".vact"), pg.inner_text(".vact"))
+    pg.goto(BASE + "/#dice", wait_until="domcontentloaded")
+    for d in [5,5,5,1,2]: pg.click(f'#pad button[data-v="{d}"]')
+    pg.click('#faces button[data-f="5"]'); pg.click('#counts button[data-c="4"]')
+    ok("线上离线骰子仍可计算", "开" not in pg.inner_text('.vact'))
+    pg.goto(BASE + "/#holdem", wait_until="domcontentloaded")
+    for r,su in [(12,0),(12,1)]:
+        pg.click(f'#hp-suits button[data-s="{su}"]'); pg.click(f'#hp-ranks button[data-r="{r}"]')
+    ok("线上离线德州AA约85%", 84 <= float(pg.inner_text('.vact').strip('%')) <= 86)
+    pg.goto(BASE + "/#bj", wait_until="domcontentloaded")
+    pg.click('#up button[data-v="6"]')
+    for d in [1,1]: pg.click(f'#pad button[data-v="{d}"]')
+    ok("线上离线21点AA对6分牌", pg.inner_text('.vact') == '分牌')
     ctx.set_offline(False)
 
     # 离线阶段浏览器必然报 ERR_INTERNET_DISCONNECTED（那正是我们制造的状态）；

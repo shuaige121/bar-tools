@@ -1,22 +1,27 @@
 #!/bin/bash
 # 构建：把四个测过的引擎原样内联进 index.html。
 # 关键：浏览器里跑的字节 == node 里测过的字节，不存在"验了 A 发了 B"。
+#
+# 流程：闸门 → 产出**候选**到临时目录 → 真浏览器验收指向候选 → 全过才覆盖 site/。
+# 任一步失败就退出非零，site/ 保持上一次通过的版本。
+#
+#   ./build.sh                  完整构建（闸门 + 浏览器验收 + 更新 site/）
+#   ./build.sh --stage DIR      只把候选产物摆到 DIR（不跑闸门、不碰 site/），
+#                               给"改一行看一眼"的手工迭代用
 set -euo pipefail
 cd "$(dirname "$0")"
 
-echo "① 闸门（任一不过就不构建）"
-for t in dice 24 holdem blackjack; do
-  node "test/verify-$t.js" > "/tmp/dl-v-$t.log" 2>&1 || { tail -20 "/tmp/dl-v-$t.log"; echo "❌ verify-$t 未通过"; exit 1; }
-  printf "   verify-%-10s %s\n" "$t" "$(grep -E '^  通过' "/tmp/dl-v-$t.log")"
-done
-for f in fault-inject fault-24 fault-holdem fault-blackjack; do
-  node "test/$f.js" > "/tmp/dl-$f.log" 2>&1 || { tail -20 "/tmp/dl-$f.log"; echo "❌ $f 有漏网"; exit 1; }
-  printf "   %-18s %s\n" "$f" "$(grep '故障注入' "/tmp/dl-$f.log")"
-done
+SITE_DIR="$PWD/site"
 
-echo "② 内联四个引擎 + app"
-python3 - <<'PY'
-import io, hashlib
+# ── 候选产物：内联 + PWA 附件，全部写进 $1 ──────────────────────────
+stage() {
+  local OUT="$1"
+  mkdir -p "$OUT"
+
+  echo "② 内联四个引擎 + app → $OUT"
+  OUT="$OUT" python3 - <<'PY'
+import io, os, hashlib
+out_dir = os.environ['OUT']
 parts = {
   '/*__ENGINE_DICE__*/':   'src/engine-dice.js',
   '/*__ENGINE_24__*/':     'src/engine-24.js',
@@ -24,34 +29,37 @@ parts = {
   '/*__ENGINE_BJ__*/':     'src/engine-blackjack.js',
   '/*__APP__*/':           'src/app.js',
 }
-out = io.open('src/app-shell.html', encoding='utf-8').read()
+SHELL_SRC = 'src/app-shell.html'
+out = io.open(SHELL_SRC, encoding='utf-8').read()
 for token, path in parts.items():
     src = io.open(path, encoding='utf-8').read()
     assert out.count(token) == 1, f'placeholder {token} not found exactly once'
     out = out.replace(token, src)              # 字面替换，不走正则（避免 \ 被当反向引用）
 for token in parts:
     assert token not in out, f'{token} survived'
-# SW 版本号 = 全部源码的内容哈希；内容一变，注册 URL 就变
-ver = hashlib.sha256(''.join(io.open(p, encoding='utf-8').read() for p in sorted(parts.values())).encode()).hexdigest()[:10]
+# SW 版本号 = 全部源码的内容哈希；内容一变，注册 URL 就变。
+# app-shell.html 必须在内 —— 它装着全部 CSS，只改样式时版本号也得动，
+# 让纯样式更新也明确触发版本变化。
+ver_srcs = sorted(list(parts.values()) + [SHELL_SRC])
+ver = hashlib.sha256(''.join(io.open(p, encoding='utf-8').read() for p in ver_srcs).encode()).hexdigest()[:10]
 assert out.count('__SWVER__') == 1, 'SW version placeholder missing'
 out = out.replace('__SWVER__', ver)
-print('   sw version =', ver)
+print('   sw version =', ver, '（含 app-shell.html）')
 for need in ('DiceEngine','Engine24','EngineHoldem','EngineBJ'):
     assert need in out, f'{need} missing from bundle'
-io.open('site/index.html','w',encoding='utf-8').write(out)
+io.open(os.path.join(out_dir, 'index.html'), 'w', encoding='utf-8').write(out)
 print('   bundle =', len(out.encode('utf-8')), 'bytes')
 PY
 
-echo "③ PWA 附件"
-cat > site/manifest.webmanifest <<'M'
+  echo "③ PWA 附件"
+  cat > "$OUT/manifest.webmanifest" <<'M'
 {
   "name": "酒桌工具箱",
   "short_name": "酒桌",
-  "description": "吹牛骰子 / 德州扑克 / 21点 / 24点，四个算牌小工具，离线可用",
+  "description": "概率教育与时间成本：吹牛骰子 / 德州 / 21点 / 24点，离线可用",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "orientation": "portrait",
   "background_color": "#0b0d12",
   "theme_color": "#0b0d12",
   "lang": "zh-CN",
@@ -63,10 +71,11 @@ cat > site/manifest.webmanifest <<'M'
 }
 M
 
-# Service Worker：HTML 走"网络优先、离线回退缓存"。
-# 故意不用 cache-first —— 那会把旧版本永久钉死在用户手机上。
-VER=$(shasum -a 256 site/index.html | cut -c1-10)
-cat > site/sw.js <<S
+  # Service Worker：HTML 走"网络优先、离线回退缓存"。
+  # 故意不用 cache-first —— 那会把旧版本永久钉死在用户手机上。
+  local VER
+  VER=$(shasum -a 256 "$OUT/index.html" | cut -c1-10)
+  cat > "$OUT/sw.js" <<S
 const V = 'bar-$VER';
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
 self.addEventListener('install', e => {
@@ -91,7 +100,7 @@ self.addEventListener('fetch', e => {
 });
 S
 
-cat > /tmp/dl-icon.svg <<'SVG'
+  cat > /tmp/dl-icon.svg <<'SVG'
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
   <rect width="512" height="512" rx="112" fill="#0b0d12"/>
   <rect x="96" y="96" width="320" height="320" rx="64" fill="#f6c453"/>
@@ -102,15 +111,53 @@ cat > /tmp/dl-icon.svg <<'SVG'
   </g>
 </svg>
 SVG
-for SZ in 180 192 512; do rsvg-convert -w $SZ -h $SZ /tmp/dl-icon.svg -o "site/icon-$SZ.png"; done
+  for SZ in 180 192 512; do rsvg-convert -w $SZ -h $SZ /tmp/dl-icon.svg -o "$OUT/icon-$SZ.png"; done
 
-cat > site/_headers <<'H'
+  cat > "$OUT/_headers" <<'H'
 /sw.js
   Cache-Control: no-cache
   Service-Worker-Allowed: /
 /index.html
   Cache-Control: no-cache
 H
+}
 
-echo "④ 产物"
+# ── --stage：只摆候选，供手工迭代。永远不许指向真产物目录 ────────────
+if [ "${1:-}" = "--stage" ]; then
+  [ -n "${2:-}" ] || { echo "用法: ./build.sh --stage DIR"; exit 2; }
+  ABS=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$2")
+  case "$ABS/" in "$SITE_DIR/"*) echo "❌ --stage 不许写 site/（那是闸门保护的产物目录）"; exit 2;; esac
+  stage "$ABS"
+  echo "   已摆到 ${ABS} （未跑任何闸门，未改 site/）"
+  exit 0
+fi
+
+echo "① 闸门（任一不过就不构建）"
+for t in dice 24 holdem blackjack; do
+  node "test/verify-$t.js" > "/tmp/dl-v-$t.log" 2>&1 || { tail -20 "/tmp/dl-v-$t.log"; echo "❌ verify-$t 未通过"; exit 1; }
+  printf "   verify-%-10s %s\n" "$t" "$(grep -E '^  通过' "/tmp/dl-v-$t.log")"
+done
+for f in fault-inject fault-24 fault-holdem fault-blackjack; do
+  node "test/$f.js" > "/tmp/dl-$f.log" 2>&1 || { tail -20 "/tmp/dl-$f.log"; echo "❌ $f 有漏网"; exit 1; }
+  printf "   %-18s %s\n" "$f" "$(grep '故障注入' "/tmp/dl-$f.log")"
+done
+
+CAND=$(mktemp -d "${TMPDIR:-/tmp}/dl-cand.XXXXXX")
+trap 'rm -rf "$CAND"' EXIT
+stage "$CAND"
+
+# ④ 真浏览器验收 —— 跑在**候选**产物上。这里不过，site/ 一个字节都不动。
+echo "④ 真浏览器验收（候选产物）"
+if ! BAR_SITE="$CAND" python3 test/browser.py > /tmp/dl-browser.log 2>&1; then
+  tail -25 /tmp/dl-browser.log
+  echo "❌ browser.py 未通过 —— site/ 保持上一次通过的版本（未改动）"
+  exit 1
+fi
+printf "   %s\n" "$(grep '浏览器验收' /tmp/dl-browser.log)"
+
+# ⑤ 全过了才覆盖正式产物
+echo "⑤ 更新 site/"
+mkdir -p "$SITE_DIR"
+cp -f "$CAND"/index.html "$CAND"/manifest.webmanifest "$CAND"/sw.js "$CAND"/_headers \
+      "$CAND"/icon-180.png "$CAND"/icon-192.png "$CAND"/icon-512.png "$SITE_DIR"/
 ls -la site/ | tail -n +4 | awk '{printf "   %-26s %8s\n", $9, $5}'

@@ -1,13 +1,19 @@
 # -*- coding: utf-8 -*-
 """真浏览器验收：四个工具逐个点一遍，把页面上显示的数字跟 node 引擎重算对账。
 断言全绿不代表好用，所以每个分支都出整页截图供人眼复核。"""
-import json, subprocess, sys, threading, http.server, socketserver, functools, pathlib
+import datetime, json, os, re, subprocess, sys, threading, http.server, socketserver, functools, pathlib
 from playwright.sync_api import sync_playwright
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SITE, PORT = ROOT / "site", 8791
+# build.sh 先把候选产物摆到临时目录再让这里验收，全过才覆盖 site/。
+# 手工跑时不设 BAR_SITE，就还是验 site/。
+SITE = pathlib.Path(os.environ.get("BAR_SITE") or (ROOT / "site")).resolve()
+PORT = 8791
 SHOTS = ROOT / "shots"; SHOTS.mkdir(exist_ok=True)
-for f in SHOTS.glob("*.png"): f.unlink()
+# 只清本脚本自己会重新生成的截图（`00_`…`92_`）。原来 glob("*.png") 会连
+# live-smoke.py 和人工留档的截图一起删掉。
+for f in SHOTS.glob("*.png"):
+    if re.match(r"^\d\d_", f.name): f.unlink()
 
 class Quiet(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -15,6 +21,29 @@ socketserver.TCPServer.allow_reuse_address = True
 httpd = socketserver.TCPServer(("127.0.0.1", PORT), functools.partial(Quiet, directory=str(SITE)))
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 BASE = f"http://127.0.0.1:{PORT}"
+
+# ── 前端变异用的第二个服务器：mutant 只活在内存里，磁盘上的产物一个字节都不动 ──
+MPORT = PORT + 1
+MUT = {"body": b"<!doctype html><title>x</title>"}
+class Mutant(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        if self.path.startswith(("/sw.js", "/manifest")) or self.path.endswith(".png"):
+            self.send_response(404); self.end_headers(); return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(MUT["body"])))
+        self.end_headers(); self.wfile.write(MUT["body"])
+mhttpd = socketserver.TCPServer(("127.0.0.1", MPORT), Mutant)
+threading.Thread(target=mhttpd.serve_forever, daemon=True).start()
+MBASE = f"http://127.0.0.1:{MPORT}"
+SRC_HTML = (SITE / "index.html").read_text(encoding="utf-8")
+
+def arm_mutant(old, new):
+    """把一处改动装进内存响应。锚点必须恰好命中一次，否则变异根本没生效而测试'通过'。"""
+    n = SRC_HTML.count(old)
+    assert n == 1, f"变异锚点命中 {n} 次（应为 1）: {old[:70]!r}"
+    MUT["body"] = SRC_HTML.replace(old, new).encode()
 
 PASS, FAIL = 0, 0; fails = []
 def ok(name, cond, detail=""):
@@ -49,7 +78,12 @@ with sync_playwright() as pw:
     pg.on("pageerror", lambda e: errs.append(f"PAGEERROR {e}"))
     pg.on("console", lambda m: errs.append(m.text) if m.type=="error" else None)
     pg.goto(BASE, wait_until="networkidle")
-    ok("首页 4 个入口", pg.locator(".tile").count()==4, f"got {pg.locator('.tile').count()}")
+    pg.evaluate("localStorage.clear()"); pg.reload(wait_until="networkidle")
+    # 写死"至少四个"会让漏掉一个入口的回归悄悄通过。这里钉的是**明确的预期清单**：
+    # 没用过任何工具时，顺序就是默认顺序。
+    EXPECT_TILES = ["dice", "holdem", "bj", "p24"]
+    tiles = pg.evaluate("() => [...document.querySelectorAll('.tile')].map(t => t.dataset.go)")
+    ok(f"首页入口清单 = {EXPECT_TILES}（未用过时的默认顺序）", tiles == EXPECT_TILES, f"got {tiles}")
     ok("首页不显示返回键", pg.locator("#back").is_hidden())
     pg.screenshot(path=str(SHOTS/"00_home.png"))
     for tid, tname in TOOLS:
@@ -186,6 +220,20 @@ with sync_playwright() as pw:
     ok("骰子：2人局叫满时不谎报模拟次数", "遍数出来的" not in t2, t2[-160:])
     ok("骰子：2人局叫满时无备选列表", pg.locator(".alt").count() <= 1,
        f"{pg.locator('.alt').count()} 行")
+
+    # 第五态（REVIEW-codex-9 §5 的漏网）：2 人 **不飞** 10个6。
+    # 引擎给 method='model' / hasRaise=false / legalCount=0 —— 上面四条只覆盖了飞模式
+    # （legalCount=6），所以"把 !hasRaise 判据再挂回 method"这种一行回退能全绿蒙过。
+    pg.click("#hbtn"); pg.wait_for_timeout(500)     # 切到「不飞」
+    t2n = pg.inner_text("#out")
+    ok("骰子：2人不飞叫满时说的是「叫到顶」",
+       "叫到顶" in t2n and "还能往上叫" not in t2n and "两步前瞻模型" not in t2n, t2n[-160:])
+    ok("骰子：2人不飞叫满时不解释不存在的条形", "条形" not in t2n, t2n[-160:])
+    ok("骰子：2人不飞叫满时不谎报模拟次数", "遍数出来的" not in t2n, t2n[-160:])
+    ok("骰子：2人不飞叫满时无备选列表", pg.locator(".alt").count() <= 1,
+       f"{pg.locator('.alt').count()} 行")
+    pg.screenshot(path=str(SHOTS / "11_dice_2p_nowild_top.png"))
+    pg.click("#hbtn"); pg.wait_for_timeout(300)     # 切回「飞」
 
     # 满手牌交互（曾出过"清空后键盘回不来"的卡死）
     pg.goto(BASE+"/#dice", wait_until="networkidle")
@@ -376,9 +424,9 @@ with sync_playwright() as pw:
         pg.click(f'#hp-suits button[data-s="{Su2[su]}"]'); pg.click(f'#hp-ranks button[data-r="{R2[rk]}"]')
     pg.wait_for_timeout(700)
     vtxt = pg.inner_text(".verdict")
-    ok("德州：「跟才不亏」在结论卡内", "跟才不亏" in vtxt or "怎么跟都不亏" in vtxt, vtxt[:120])
+    ok("德州：「跟才不亏」在结论卡内", "时间成本" in vtxt, vtxt[:120])
     geo = pg.evaluate("""() => { const els=[...document.querySelectorAll('.verdict .vwhy')];
-        const t=els.find(e=>/跟才不亏|怎么跟都不亏/.test(e.innerText));
+        const t=els.find(e=>/时间成本/.test(e.innerText));
         if(!t) return null; const b=t.getBoundingClientRect(), d=document.querySelector('.dock').getBoundingClientRect();
         return [Math.round(b.top), Math.round(b.bottom), Math.round(d.top)]; }""")
     ok(f"德州：该句不被吸底键盘遮住（{geo}）", geo is not None and geo[1] <= geo[2] and geo[0] >= 0)
@@ -387,17 +435,16 @@ with sync_playwright() as pw:
     # 曾经在 95.3%~99.9% 区间输出「至少要有你跟注额的 0.0 倍」——单点测试测不出，
     # 只有扫整个区间才抓得到。这里直接在页面上下文里跑那段措辞逻辑。
     bad = pg.evaluate("""() => {
-      function say(e){
-        if (e > 0.999) return '这手基本必赢，怎么跟都不亏。';
-        var m = 1/e - 1;
-        if (m < 0.05) return '这手赢面极大，底池里随便有点钱，跟就不亏。';
-        return '底池至少要有你跟注额的 ' + m.toFixed(m < 1 ? 2 : 1) + ' 倍，跟才不亏。';
-      }
-      const bad = [];
-      for (let i = 1; i <= 2000; i++) {
-        const e = i / 2000, t = say(e);
-        if (/的 0(\.0+)? 倍/.test(t) || /NaN|Infinity|undefined/.test(t)) bad.push([e, t]);
-      }
+      const original = EngineHoldem.equity, bad = [];
+      try {
+        for (let i = 1; i <= 2000; i++) {
+          const e = i / 2000;
+          EngineHoldem.equity = () => ({equity:e,win:e,tie:0,lose:1-e});
+          document.querySelector('#opps button[data-o="1"]').click();
+          const t = document.querySelector('.verdict').innerText;
+          if (/的 0(\\.0+)? 倍/.test(t) || /NaN|Infinity|undefined|怎么跟都不亏/.test(t)) bad.push([e, t]);
+        }
+      } finally { EngineHoldem.equity = original; }
       return bad.slice(0, 3);
     }""")
     ok("德州：「该不该跟」在整个胜率区间都不出胡话（0.0倍/NaN/Infinity）", not bad, str(bad))
@@ -560,9 +607,388 @@ with sync_playwright() as pw:
        "; ".join(f'{x["cls"]}:{x["bar"]}' for x in stripes))
     pg.screenshot(path=str(SHOTS/"00_home.png"))
 
+    # ── 9. 定位声明 · 期望标注 · 时间成本计 ───────────────────────
+    print("\n【9】定位声明 · 每游戏期望标注 · 时间成本计")
+    EXPECT_TXT = {
+        "dice": "胜率随叫法与对手变化",
+        "holdem": "底池份额随手牌变化，非盈利概率",
+        "bj": "收益示例 −0.570%，并非胜率",
+        "p24": "无对赌胜率，只求解",
+    }
+    pg.goto(BASE, wait_until="networkidle")
+    pg.evaluate("localStorage.clear()"); pg.reload(wait_until="networkidle")
+    ok("首页可见作者不赌博的定位", "作者本人不赌博" in pg.inner_text(".purpose"))
+    geo = pg.locator(".menu").bounding_box()
+    ok("375×667 首页四个入口完整可见", geo['y'] >= 0 and geo['y'] + geo['height'] <= 667, str(geo))
+    pg.click(".education summary")
+    why = pg.inner_text(".education")
+    ok("法律表述保留许可与豁免条件", "未经许可或豁免" in why and "须符合条件" in why)
+    ok("时薪说明含适用人群、日期、非麦当劳报价", all(t in why for t in ["公民／PR", "2027-06-30", "不是麦当劳官方报价", "机会成本"]))
+    ok("不宣称任何人期望永远为负", "期望收益永远为负" not in pg.inner_text("body"))
+    ok("官方时薪和法律依据可点击", pg.locator('.education a[href^="https://www.mom.gov.sg/"]').count() == 1 and pg.locator('.education a[href^="https://www.mha.gov.sg/"]').count() == 1)
+    for tid, tname in TOOLS:
+        got = pg.locator(f'.tile[data-go="{tid}"] .ex').inner_text()
+        ok(f"首页「{tname}」区分胜率和收益", got == f"（{EXPECT_TXT[tid]}）", got)
+    for tid, tname in TOOLS:
+        pg.goto(BASE + "/#" + tid, wait_until="networkidle")
+        ok(f"「{tname}」页底部解释概率边界", pg.inner_text(".expectation") == f"（{EXPECT_TXT[tid]}）")
+    # 21 点必须说清 10 含 J/Q/K（牌面无花色，也不虚构花色）
+    pg.goto(BASE + "/#bj", wait_until="networkidle")
+    lab_txt = pg.inner_text("#view > .sec:first-child .lab")
+    ok("21点：「我的牌」标签上可见地注明「10 含 J/Q/K」（不能只躺在折叠说明里）",
+       "10 含 J/Q/K" in lab_txt, repr(lab_txt))
+
+    # ── 9b. 首页按最近使用排序 ───────────────────────────────────
+    print("\n【9b】首页卡片按最近使用排序")
+    def order():
+        return pg.evaluate("() => [...document.querySelectorAll('.tile')].map(t => t.dataset.go)")
+    pg.goto(BASE, wait_until="networkidle")
+    pg.evaluate("localStorage.clear()"); pg.reload(wait_until="networkidle")
+    ok("排序：清空存储 → 默认顺序 骰子/德州/21点/24点",
+       order() == ["dice", "holdem", "bj", "p24"], str(order()))
+    pg.click('.tile[data-go="bj"]'); pg.wait_for_timeout(160)
+    pg.click("#back"); pg.wait_for_timeout(160)
+    ok("排序：进过 21 点 → 21 点第一，其余相对顺序不变",
+       order() == ["bj", "dice", "holdem", "p24"], str(order()))
+    pg.click('.tile[data-go="p24"]'); pg.wait_for_timeout(160)
+    pg.click("#back"); pg.wait_for_timeout(160)
+    ok("排序：再进 24 点 → 24 点第一、21 点第二",
+       order() == ["p24", "bj", "dice", "holdem"], str(order()))
+    pg.reload(wait_until="networkidle")
+    ok("排序：刷新后顺序保留", order() == ["p24", "bj", "dice", "holdem"], str(order()))
+    o1 = order(); pg.wait_for_timeout(1300)
+    ok("排序：停留首页期间不重排（卡片不在手指底下跳）", order() == o1, str(order()))
+    ok("排序：写的是 localStorage['bar.lastUsed']",
+       set(json.loads(pg.evaluate("() => localStorage.getItem('bar.lastUsed')")).keys()) == {"bj", "p24"},
+       pg.evaluate("() => localStorage.getItem('bar.lastUsed')"))
+
+    # ── 9c. 时间成本计（用 page.clock 推进，不靠真等） ─────────────
+    print("\n【9c】时间成本计")
+    TC0 = "本站累计 0:00 · 时间成本 S$0.00"
+    TC90 = "本站累计 1:30 · 时间成本 S$0.30"
+    tctx = br.new_context(viewport={"width": 375, "height": 667}, device_scale_factor=3,
+                          is_mobile=True, has_touch=True)
+    tp = tctx.new_page()
+    terrs = []
+    tp.on("pageerror", lambda e: terrs.append(str(e)))
+    # install() 装的假时钟仍然跟着真实时间走，那样 reload 的 pagehide 会把加载耗掉的
+    # 几十毫秒先落盘，累计值就不是整数秒了（实测 90042）。pause_at 把表冻住，
+    # 之后只有 fast_forward 能推动它，毫秒数才是可断言的确定值。
+    T0 = datetime.datetime(2026, 9, 11, 20, 0, 0)
+    tp.clock.install(time=T0)
+    tp.clock.pause_at(T0)
+    tp.goto(BASE, wait_until="domcontentloaded")
+    tp.evaluate("localStorage.clear()"); tp.reload(wait_until="domcontentloaded")
+    ok("时间计：初始 0 分钟 / S$0.00", tp.inner_text("#timecost") == TC0, tp.inner_text("#timecost"))
+    tp.clock.fast_forward(90_000)
+    tp.wait_for_timeout(150)
+    ok("时间计：推进 90s → 「1 分钟」且金额 S$0.30（12.04×1.5/60=0.301→0.30）",
+       tp.inner_text("#timecost") == TC90, tp.inner_text("#timecost"))
+    ok("时间计：只写本地 localStorage['bar.timeMs']（整数毫秒）",
+       tp.evaluate("() => localStorage.getItem('bar.timeMs')") == "90000",
+       tp.evaluate("() => localStorage.getItem('bar.timeMs')"))
+    tp.evaluate("""() => {
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }""")
+    tp.clock.fast_forward(60_000)
+    tp.wait_for_timeout(150)
+    ok("时间计：hidden 状态下推进 60s 不累计（切后台就停表）",
+       tp.inner_text("#timecost") == TC90 and
+       tp.evaluate("() => localStorage.getItem('bar.timeMs')") == "90000",
+       tp.inner_text("#timecost"))
+    tp.reload(wait_until="domcontentloaded")
+    ok("时间计：刷新后累计值保留", tp.inner_text("#timecost") == TC90, tp.inner_text("#timecost"))
+    for tid, tname in TOOLS:
+        tp.goto(BASE + "/#" + tid, wait_until="domcontentloaded")
+        ok(f"时间计：「{tname}」页底部也显示同一个值",
+           tp.inner_text("#timecost") == TC90, tp.inner_text("#timecost"))
+    # Per-tool time and net return: exercise the actual rendered controls.
+    tp.goto(BASE + "/#bj", wait_until="domcontentloaded")
+    tp.clock.fast_forward(3_600_000)
+    tp.wait_for_timeout(100)
+    ok("21点独立累计一小时", "60:00" in tp.inner_text("#tooltime"), tp.inner_text("#tooltime"))
+    tp.fill("#cash", "1000")
+    ok("21点：1000×−0.570% − 12.04 = −17.74", "净收益 −S$17.74" in tp.inner_text("#netcost"), tp.inner_text("#netcost"))
+    tp.select_option("#ev-rule", "0.00789")
+    ok("21点切规则：−7.89 − 12.04 = −19.93", "净收益 −S$19.93" in tp.inner_text("#netcost"))
+    tp.select_option("#ev-rule", "0.01923")
+    ok("6:5 示例：−19.23 − 12.04 = −31.27", "净收益 −S$31.27" in tp.inner_text("#netcost"))
+    tp.fill("#cash", "-1")
+    ok("21点拒绝负下注额", "有效金额" in tp.inner_text("#netcost"))
+    tp.fill("#cash", "")
+    ok("空金额不伪装成零收益", "有效金额" in tp.inner_text("#netcost"))
+    tp.goto(BASE + "/#holdem", wait_until="domcontentloaded")
+    tp.clock.fast_forward(1_800_000)
+    tp.wait_for_timeout(100)
+    tp.fill("#cash", "20")
+    ok("德州：假设赚20 − 半小时时间6.02 = 13.98", "净收益 +S$13.98" in tp.inner_text("#netcost"))
+    tp.fill("#cash", "-10")
+    ok("德州：假设亏10 − 时间6.02 = −16.02", "净收益 −S$16.02" in tp.inner_text("#netcost"))
+    tp.goto(BASE + "/#p24", wait_until="domcontentloaded")
+    tp.clock.fast_forward(90_000)
+    tp.wait_for_timeout(100)
+    ok("24点：只扣自己的90秒，非全站累计", "净收益 −S$0.30" in tp.inner_text("#netcost"))
+    tp.goto(BASE + "/#bj", wait_until="domcontentloaded")
+    ok("返回21点：其他游戏的时间未串入", "60:00" in tp.inner_text("#tooltime"))
+    # A second tab must not have its accumulated time overwritten by a hidden first tab.
+    tp.evaluate("""() => {
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }""")
+    other = tctx.new_page()
+    other.goto(BASE + "/#dice", wait_until="domcontentloaded")
+    other.clock.fast_forward(60_000)
+    other.wait_for_timeout(100)
+    other.evaluate("""() => {
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }""")
+    before = other.evaluate("Number(localStorage.getItem('bar.timeMs'))")
+    tp.clock.fast_forward(60_000)
+    after = tp.evaluate("Number(localStorage.getItem('bar.timeMs'))")
+    ok("后台旧标签页不会覆盖新标签页累计值", after == before, f"before={before}, after={after}")
+    other.close()
+    ok("时间计：全程无 JS 报错", not terrs, "; ".join(terrs[:2]))
+    tctx.close()
+
+    # ── 10. 视觉牌面：身份 / 无花色 / 几何 ────────────────────────
+    print("\n【10】视觉牌面：52 张身份核对 · 无花色 · 尺寸")
+    # 花色由**形状自己**证明，不读 data-c 自证：
+    #   顶部中心是否在填充内 / 底部尖角是否在填充内 / 是否比高更宽
+    SUIT_SIG = {"s": [True,  False, False],   # 黑桃：顶实、无下尖、瘦高
+                "h": [False, False, True],    # 红桃：顶部有凹口（和方块唯一稳定的区别）、扁宽
+                "d": [True,  True,  False],   # 方块：顶实、有下尖角
+                "c": [True,  False, True]}    # 梅花：顶实、无下尖、最宽
+    SUIT_NAME = {"s": "黑桃", "h": "红桃", "d": "方块", "c": "梅花"}
+    CARD_JS = """() => [...document.querySelectorAll('.pcard[data-c]')].map(b => {
+      const pf = b.querySelector('.pf'), svs = [...b.querySelectorAll('svg.sv')];
+      const sig = svs.map(sv => {
+        const p = sv.querySelector('path'), bb = p.getBBox();
+        const mk = (x, y) => { const pt = sv.createSVGPoint(); pt.x = x; pt.y = y; return pt; };
+        return [p.isPointInFill(mk(12, 3.5)), p.isPointInFill(mk(12, 21.5)), bb.width > bb.height];
+      });
+      return { label: b.getAttribute('aria-label'),
+               rank:  b.querySelector('.ix.t').textContent.trim(),
+               rank2: b.querySelector('.ix.b').textContent.trim(),
+               n: svs.length, sig: sig, color: getComputedStyle(pf).color };
+    })"""
+    def probe_cards(p, base, cards):
+        """逐张核对点数、花色形状、红黑、无障碍名。返回问题清单（空 = 通过）。"""
+        p.goto(base + "/#holdem", wait_until="domcontentloaded")
+        p.evaluate("localStorage.clear()"); p.reload(wait_until="domcontentloaded")
+        p.click('#opps button[data-o="8"]')      # 8 家 → 30,000 次模拟，最快的一档
+        bad = []
+        for i in range(0, len(cards), 7):
+            chunk = cards[i:i+7]                 # 一次摆满 2 手牌 + 5 公共牌
+            p.click("#clr")
+            for rk, su in chunk:
+                p.click(f'#hp-suits button[data-s="{Su2[su]}"]')
+                p.click(f'#hp-ranks button[data-r="{R2[rk]}"]')
+            got = p.evaluate(CARD_JS)
+            if len(got) != len(chunk):
+                bad.append(f"这批渲染出 {len(got)} 张，应为 {len(chunk)}"); break
+            for (rk, su), g in zip(chunk, got):
+                lab = "10" if rk == "T" else rk
+                nm = SUIT_NAME[su] + lab
+                m = re.match(r"rgb\((\d+), (\d+), (\d+)\)", g["color"] or "")
+                red = bool(m) and int(m.group(1)) >= 150 and int(m.group(2)) <= 90
+                if g["rank"] != lab or g["rank2"] != lab:
+                    bad.append(f"{nm}: 双角标是 {g['rank']!r}/{g['rank2']!r}")
+                if g["label"] != nm:
+                    bad.append(f"{nm}: 无障碍名 {g['label']!r}")
+                if g["n"] != 3:
+                    bad.append(f"{nm}: 花色图形 {g['n']} 个（应为双角标 + 牌心 = 3）")
+                elif any(s != SUIT_SIG[su] for s in g["sig"]):
+                    bad.append(f"{nm}: 花色形状 {g['sig'][0]} ≠ {SUIT_SIG[su]}")
+                if red != (su in "hd"):
+                    bad.append(f"{nm}: 红黑错（color={g['color']}）")
+        return bad
+    ALL52 = [(rk, su) for rk in "23456789TJQKA" for su in "shdc"]
+    bad = probe_cards(pg, BASE, ALL52)
+    ok(f"德州：52 张牌逐张核对点数/花色形状/红黑/无障碍名", not bad, "; ".join(bad[:4]))
+
+    NOSUIT_JS = """(sel) => [...document.querySelectorAll(sel + ' .pcard[data-i]')].flatMap(b => {
+      const out = [], lab = b.getAttribute('aria-label') || '';
+      const n = b.querySelectorAll('svg,[data-suit]').length;
+      if (n) out.push(`${sel} ${lab}: 凭空多出 ${n} 个花色图形`);
+      if (/[♠♥♦♣]/.test(b.textContent)) out.push(`${sel} ${lab}: 文本里有花色字符`);
+      if (/黑桃|红桃|方块|梅花/.test(lab)) out.push(`${sel} 无障碍名虚构了花色: ${lab}`);
+      return out;
+    })"""
+    def probe_nosuit(p, base):
+        """21 点 / 24 点只知道点数，绝不能产生花色。"""
+        bad = []
+        p.goto(base + "/#bj", wait_until="domcontentloaded")
+        p.evaluate("localStorage.clear()"); p.reload(wait_until="domcontentloaded")
+        p.click('#up button[data-v="10"]')
+        for c in [1, 10, 5]: p.click(f'#pad button[data-v="{c}"]')
+        p.wait_for_timeout(150)
+        bad += p.evaluate(NOSUIT_JS, "#mine")
+        p.goto(base + "/#p24", wait_until="domcontentloaded")
+        for n in [1, 11, 12, 13]: p.click(f'#pad button[data-v="{n}"]')
+        p.wait_for_timeout(250)
+        bad += p.evaluate(NOSUIT_JS, "#slots")
+        return bad
+    bad = probe_nosuit(pg, BASE)
+    ok("21点/24点：牌面不产生任何花色（不虚构系统并不知道的信息）", not bad, "; ".join(bad[:4]))
+    # 24 点 A/J/Q/K → 1/11/12/13 的映射
+    labs = pg.evaluate("() => [...document.querySelectorAll('#slots .pcard[data-i]')].map(b => b.getAttribute('aria-label'))")
+    ok("24点：A/J/Q/K 映射正确（1/11/12/13）", labs == ["A", "J", "Q", "K"], str(labs))
+    # 重复点数要能分别删除
+    pg.goto(BASE + "/#p24", wait_until="networkidle")
+    pg.evaluate("localStorage.clear()"); pg.reload(wait_until="networkidle")
+    for n in [5, 5, 5, 1]: pg.click(f'#pad button[data-v="{n}"]')
+    pg.wait_for_timeout(200)
+    pg.click('#slots .pcard[data-i="0"]'); pg.wait_for_timeout(120)
+    labs = pg.evaluate("() => [...document.querySelectorAll('#slots .pcard[data-i]')].map(b => b.getAttribute('aria-label'))")
+    ok("24点：三张重复的 5 能单独删掉一张", labs == ["5", "5", "A"], str(labs))
+
+    GEOM_JS = """() => { const bad = [];
+      document.querySelectorAll('.pcard').forEach(b => {
+        const r = b.getBoundingClientRect(), f = b.querySelector('.pf');
+        const w = Math.round(r.width), h = Math.round(r.height);
+        if (w < 44 || h !== 54) bad.push(`外壳 ${b.className}: ${w}x${h}（应 ≥44 宽、54 高）`);
+        if (!f) { bad.push(`${b.className}: 没有 .pf 牌面`); return; }
+        const fb = f.getBoundingClientRect();
+        const fw = Math.round(fb.width), fh = Math.round(fb.height);
+        if (fw !== 40 || fh !== 54) bad.push(`牌面 ${b.className}: ${fw}x${fh}（应 40x54）`);
+      }); return bad; }"""
+    def probe_geom(p, base):
+        """可见牌面 40×54、点击外壳 ≥44×54；21 点 7 张不换行。"""
+        bad = []
+        p.goto(base + "/#holdem", wait_until="domcontentloaded")
+        p.evaluate("localStorage.clear()"); p.reload(wait_until="domcontentloaded")
+        for su, rk in [("s","A"),("s","K"),("h","Q"),("d","J"),("c","9"),("s","2"),("h","3")]:
+            p.click(f'#hp-suits button[data-s="{Su2[su]}"]')
+            p.click(f'#hp-ranks button[data-r="{R2[rk]}"]')
+        p.wait_for_timeout(300)
+        bad += ["德州 " + x for x in p.evaluate(GEOM_JS)]
+        p.goto(base + "/#bj", wait_until="domcontentloaded")
+        p.click('#up button[data-v="10"]')
+        for c in [1, 2, 3, 4, 5, 6, 7]: p.click(f'#pad button[data-v="{c}"]')
+        p.wait_for_timeout(200)
+        bad += ["21点 " + x for x in p.evaluate(GEOM_JS)]
+        ys = p.evaluate("() => [...document.querySelectorAll('#mine .pcard[data-i]')].map(b => Math.round(b.getBoundingClientRect().y))")
+        if len(ys) != 7: bad.append(f"21点 只渲染出 {len(ys)} 张牌")
+        elif max(ys) != min(ys): bad.append(f"21点 7 张牌换行了（y={sorted(set(ys))}）")
+        return bad
+    bad = probe_geom(pg, BASE)
+    ok("牌面 40×54 / 点击外壳 ≥44×54，且 21 点 7 张一排不换行", not bad, "; ".join(bad[:4]))
+    pg.screenshot(path=str(SHOTS / "31_bj_7cards.png"))
+
+    # ── 10b. 前端变异：证明上面三条闸门真的会响 ────────────────────
+    # 变异只装进内存 HTTP 响应（MBASE），磁盘上的 site/index.html 一个字节都不改。
+    print("\n【10b】前端变异：三条牌面闸门必须各自变红")
+    def gate_fires(label, old, new, probe, *args):
+        arm_mutant(old, new)
+        mp = ctx.new_page()
+        try:
+            found = probe(mp, MBASE, *args)
+        finally:
+            mp.close()
+        ok(f"变异「{label}」触发了闸门", bool(found), "变异下探针依旧全绿 = 漏网")
+    gate_fires("红桃↔方块互换",
+               "return SUIT_PATH[s];",
+               "return SUIT_PATH[s === 1 ? 2 : s === 2 ? 1 : s];",
+               probe_cards, [("A","h"), ("A","d"), ("A","s"), ("A","c")])
+    gate_fires("无花色牌被塞了随机花色",
+               "faceHTML(lab, null)",
+               "faceHTML(lab, (Math.random()*4)|0)",
+               probe_nosuit)
+    gate_fires("牌高改成 90px",
+               "width:44px;height:54px",
+               "width:44px;height:90px",
+               probe_geom)
+
+    # ── 11. 手机适配 P0：触控 ≥44 · touch-action · dock 生命周期 ──
+    print("\n【11】触控 ≥44 · touch-action · dock 生命周期")
+    small44 = []
+    pg.goto(BASE + "/#bj", wait_until="networkidle")
+    pg.click('#up button[data-v="10"]')
+    for c in [1, 10, 5]: pg.click(f'#pad button[data-v="{c}"]')
+    pg.wait_for_timeout(150)
+    SM_JS = """() => { const bad = [];
+      document.querySelectorAll('.pill.sm,.pcard[data-i]').forEach(el => {
+        const r = el.getBoundingClientRect();
+        if (r.width && r.height < 44) bad.push(`${el.className}:${Math.round(r.width)}x${Math.round(r.height)}`);
+      }); return bad; }"""
+    small44 += pg.evaluate(SM_JS)
+    pg.goto(BASE + "/#p24", wait_until="networkidle")
+    for n in [3, 8, 3, 8]: pg.click(f'#pad button[data-v="{n}"]')
+    pg.wait_for_timeout(200)
+    small44 += pg.evaluate(SM_JS)
+    pg.goto(BASE + "/#holdem", wait_until="networkidle")
+    small44 += pg.evaluate(SM_JS)
+    ok("`.pill.sm` 与所有 `.pcard[data-i]` 触控高 ≥44px", not small44,
+       "; ".join(sorted(set(small44))[:5]))
+    ta_all = []
+    for tid, _ in [("", "")] + TOOLS:
+        pg.goto(BASE + ("/#" + tid if tid else "/"), wait_until="networkidle")
+        ta_all += pg.evaluate("""() => { const bad = [];
+          document.querySelectorAll('button,summary,.slot,.act,.pcard').forEach(el => {
+            const t = getComputedStyle(el).touchAction;
+            if (t !== 'manipulation') bad.push(`${el.className || el.tagName}:${t}`);
+          }); return [...new Set(bad)]; }""")
+    ok("所有操作目标都是 touch-action:manipulation（去掉双击缩放的 300ms 等待）",
+       not ta_all, "; ".join(sorted(set(ta_all))[:5]))
+    # dock 生命周期：切页 20 次后，旧工具的 resize 回调不许还在改 body 补白
+    pg.goto(BASE, wait_until="networkidle")
+    derrs = []
+    pg.on("pageerror", lambda e: derrs.append(str(e)))
+    for _ in range(5):
+        for tid, _ in TOOLS:
+            pg.evaluate(f"location.hash='#{tid}'"); pg.wait_for_timeout(45)
+            pg.evaluate("location.hash=''"); pg.wait_for_timeout(45)
+    ok("连续切换四个工具/首页 20 次：DOM 里没有残留的 dock", pg.locator(".dock").count() == 0,
+       f"{pg.locator('.dock').count()} 个")
+    pg.evaluate("window.dispatchEvent(new Event('resize'))"); pg.wait_for_timeout(80)
+    pb = pg.evaluate("() => document.body.style.paddingBottom")
+    ok("切页 20 次后在首页 resize：旧 dock 回调不再改 body 补白（首页补白已恢复）",
+       pb == "", f"body.paddingBottom={pb!r}")
+    pg.evaluate("location.hash='#holdem'"); pg.wait_for_timeout(200)
+    pg.evaluate("window.dispatchEvent(new Event('resize'))"); pg.wait_for_timeout(80)
+    pb2 = pg.evaluate("() => document.body.style.paddingBottom")
+    ok("dispose 没有把当前页的 dock 一起拆掉（resize 后仍在补白）",
+       pb2 not in ("", "0px"), f"body.paddingBottom={pb2!r}")
+    ok("切页 20 次全程无 JS 报错", not derrs, "; ".join(derrs[:2]))
+
+    # Install on a fresh origin context, disconnect, then compute in all four tools.
+    print("\n【12】真实断网重载：四个引擎均可计算")
+    offctx = br.new_context(viewport={"width":375,"height":667}, is_mobile=True, has_touch=True)
+    off = offctx.new_page(); offerrs = []
+    off.on("pageerror", lambda e: offerrs.append(str(e)))
+    off.goto(BASE, wait_until="networkidle")
+    off.evaluate("navigator.serviceWorker.ready")
+    off.wait_for_function("navigator.serviceWorker.controller !== null")
+    offctx.set_offline(True)
+    off.goto(BASE + "/#dice", wait_until="domcontentloaded")
+    for n in [5,5,5,1,2]: off.click(f'#pad button[data-v="{n}"]')
+    off.click('#faces button[data-f="5"]'); off.click('#counts button[data-c="4"]')
+    ok("离线骰子：手里已有4个5，应加注", "开" not in off.inner_text(".vact"))
+    off.goto(BASE + "/#holdem", wait_until="domcontentloaded")
+    for r, su in [(12,0),(12,1)]:
+        off.click(f'#hp-suits button[data-s="{su}"]'); off.click(f'#hp-ranks button[data-r="{r}"]')
+    eq = float(off.inner_text(".vact").strip('%'))
+    ok("离线德州：AA对1家约85%", 84 <= eq <= 86, str(eq))
+    off.goto(BASE + "/#bj", wait_until="domcontentloaded")
+    off.click('#up button[data-v="6"]')
+    for n in [1,1]: off.click(f'#pad button[data-v="{n}"]')
+    ok("离线21点：AA对6分牌", off.inner_text(".vact") == "分牌")
+    off.fill("#cash", "1000")
+    ok("离线仍可扣减时间成本", "游戏期望收益 −S$5.70" in off.inner_text("#netcost"))
+    off.goto(BASE + "/#p24", wait_until="domcontentloaded")
+    for n in [3,8,3,8]: off.click(f'#pad button[data-v="{n}"]')
+    ok("离线24点：3388仍能求解", off.inner_text(".vact") == "8 ÷ (3 − 8 ÷ 3) = 24")
+    off.goto(BASE, wait_until="domcontentloaded")
+    ok("离线首页仍记住最近使用", off.locator('.tile').first.get_attribute('data-go') == 'p24')
+    ok("四工具离线无JS异常", not offerrs, str(offerrs))
+    offctx.close()
+
     ctx.close(); br.close()
 
-httpd.shutdown()
+httpd.shutdown(); mhttpd.shutdown()
 print("\n"+"="*66)
 print(f"  浏览器验收: 通过 {PASS} / 失败 {FAIL}   截图 → {SHOTS}")
 if fails: print("  失败: " + " | ".join(fails[:8]))

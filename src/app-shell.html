@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>酒桌工具箱</title>
 <meta name="description" content="酒桌上用得着的算牌工具：吹牛骰子胜率、德州扑克胜率、21点最优决策、24点求解。全部离线可用。">
 <meta name="theme-color" content="#0b0d12">
@@ -21,6 +21,9 @@
   --r:14px;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+/* 双击缩放的 300ms 等待期让每一下点击都"慢半拍"，酒吧里连点会丢点。
+   只给真正的操作目标，不给正文（正文还要能双击选词）。 */
+button,summary,.slot,.act,.pcard{touch-action:manipulation}
 html,body{margin:0;padding:0}
 body{
   background:var(--bg); color:var(--fg);
@@ -36,7 +39,7 @@ h1{font-size:17px;margin:0;font-weight:650;letter-spacing:.3px;flex:1;min-width:
 h1 span{color:var(--dim);font-weight:400;font-size:12.5px;margin-left:6px}
 .back{display:flex;align-items:center;justify-content:center;width:44px;height:44px;margin-left:-10px;
   color:var(--gold);font-size:22px;cursor:pointer;flex:0 0 auto;background:none;border:none;font-family:inherit}
-.hbtn{flex:0 0 auto;padding:0 14px;min-height:40px;background:var(--card);border:1px solid var(--line);
+.hbtn{flex:0 0 auto;padding:0 14px;min-height:44px;background:var(--card);border:1px solid var(--line);
   border-radius:11px;color:var(--fg);font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer}
 .hbtn.on{background:var(--gold);border-color:var(--gold);color:#171310}
 
@@ -44,6 +47,16 @@ h1 span{color:var(--dim);font-weight:400;font-size:12.5px;margin-left:6px}
 .hero{padding:8px 2px 4px}
 .hero h2{font-size:26px;margin:0 0 4px;font-weight:750;letter-spacing:.5px}
 .hero p{color:var(--dim);font-size:13.5px;margin:0}
+body.home header{display:none}
+.purpose{font-size:13px;line-height:1.5;margin:8px 2px;color:var(--gold)}
+a{color:var(--gold)}
+.cost-panel{margin-top:16px;padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--card)}
+.cost-panel h3{font-size:16px;margin:0 0 8px}
+.cost-panel p{font-size:13px;line-height:1.6}
+.cost-panel label{display:block;font-size:13px;margin:10px 0 6px}
+.cost-panel input,.cost-panel select{width:100%;min-height:44px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit;font-size:16px}
+.cost-panel .net{color:var(--gold);font-size:16px;font-weight:650}
+.education p{font-size:13px}
 .menu{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
 .tile{
   background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 12px 12px;
@@ -55,6 +68,8 @@ h1 span{color:var(--dim);font-weight:400;font-size:12.5px;margin-left:6px}
 .tile .ic{font-size:30px;line-height:1;margin-bottom:auto;font-weight:800;letter-spacing:-1px}
 .tile .nm{font-size:17px;font-weight:700;margin-top:8px}
 .tile .ds{font-size:11.5px;color:var(--dim);line-height:1.4;margin-top:3px;min-height:32px}
+/* 每张卡片的期望标注：这个游戏长期算下来会怎样，用括号小字钉在描述下面 */
+.tile .ex{font-size:12px;color:#9aa7bb;line-height:1.35;margin-top:5px;display:block}
 .t-dice .ic{color:var(--gold)} .t-holdem .ic{color:var(--raise)}
 .t-bj .ic{color:var(--open)} .t-p24 .ic{color:var(--blue)}
 .t-holdem .ic{letter-spacing:0}
@@ -70,22 +85,29 @@ h1 span{color:var(--dim);font-weight:400;font-size:12.5px;margin-left:6px}
 .lab b{color:var(--fg);font-weight:600;font-size:12.5px}
 .lab .act{color:var(--gold);font-size:12.5px;padding:11px 12px;margin:-11px -12px;cursor:pointer;display:inline-flex;align-items:center;min-height:44px}
 .row{display:flex;gap:6px}
+#players,#opps{overflow-x:auto}
+#players button,#opps button{min-width:44px;flex:1 0 44px}
 .pill{flex:1;min-width:0;min-height:44px;background:var(--card);border:1px solid var(--line);border-radius:11px;
   color:var(--fg);font-size:16px;font-weight:600;font-family:inherit;display:flex;align-items:center;justify-content:center;
   cursor:pointer;transition:background .09s,border-color .09s,transform .09s}
 .pill:active{transform:scale(.94)}
 .pill.on{background:var(--gold);border-color:var(--gold);color:#171310}
-.pill.sm{min-height:40px;font-size:14px}
+/* 原来 40px：低于 44 的触控目标在 375px 宽的手机上实测会连点丢点（Codex P0 第一条）。
+   高度是唯一还能加的方向 —— 宽度被"8 个对手一排"的布局预算钉死，改 stepper 留第二阶段。 */
+.pill.sm{min-height:44px;font-size:14px}
 .grid6{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
 .grid7{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
 .tray{display:flex;gap:6px;align-items:center;background:var(--card);border:1px solid var(--line);
   border-radius:var(--r);padding:8px;min-height:60px;flex-wrap:wrap}
 .tray.empty{justify-content:center;color:var(--dim);font-size:13.5px}
+/* 21 点一手最多 8 张。7 张 44px 外壳配默认 6px 间距 = 344px，超出 tray 内部可用的
+   333px（375 − 12×2 body − 8×2 padding − 1×2 border）会换行；4px 间距 = 332px 刚好一排。 */
+.tray.tight{gap:4px}
 .hint{color:var(--gold);font-size:13.5px;text-align:center;padding:22px 10px;background:var(--card);
   border:1px dashed var(--line);border-radius:var(--r);margin-top:14px;line-height:1.6}
 .note{color:var(--dim);font-size:11.5px;line-height:1.65;margin:14px 2px 0}
 .note b{color:#9aa7bb;font-weight:600}
-details.note summary{cursor:pointer;color:var(--gold);font-size:12px;padding:8px 0;list-style:none;min-height:36px}
+details.note summary{cursor:pointer;color:var(--gold);font-size:12px;padding:8px 0;list-style:none;min-height:44px}
 details.note summary::-webkit-details-marker{display:none}
 details.note summary::after{content:" ▾"} details.note[open] summary::after{content:" ▴"}
 
@@ -146,13 +168,33 @@ details.note summary::after{content:" ▾"} details.note[open] summary::after{co
 .strip button.hot{border-color:#3a4759;color:#cdd6e4}
 
 /* ── 扑克牌 ── */
-.pcard{display:inline-flex;align-items:center;justify-content:center;flex-direction:column;
-  width:40px;height:54px;border-radius:7px;background:#f2f4f8;color:#171310;font-weight:800;
-  font-size:19px;line-height:1;cursor:pointer;flex:0 0 auto;border:1px solid #c9cfda;transition:transform .09s}
+/* 点击外壳 44×54，可见牌面 40×54：装饰不参与布局，所以德州两排 tray 的高度没变。
+   五张公共牌 = 5×44 + 4×6 = 244px，仍在 351px 的内容宽里排成一行。
+   40px 宽的牌上"点数看得清"比"复刻实体牌"重要，所以只做双角标 + 中央花色，不画人物牌。 */
+.pcard{display:inline-flex;align-items:center;justify-content:center;
+  width:44px;height:54px;padding:0;flex:0 0 auto;background:none;border:0;
+  font-family:inherit;cursor:pointer;transition:transform .09s}
 .pcard:active{transform:scale(.92)}
-.pcard.red{color:#d8232a}
-.pcard .s{font-size:14px;margin-top:2px;font-weight:700}
-.pcard.ph{background:transparent;border:1px dashed var(--line);color:var(--dim);font-size:11px;font-weight:500}
+.pf{position:relative;display:block;width:40px;height:54px;border-radius:7px;
+  background:#f2f4f8;color:#171310;border:1px solid #c9cfda;overflow:hidden;
+  font-weight:800;line-height:1}
+.pcard.red .pf{color:#d8232a}
+/* 双角标：左上正读、右下旋转 180°，和实体牌一样从任一头都能读出点数 */
+.ix{position:absolute;display:flex;flex-direction:column;align-items:center;gap:1px;
+  font-size:13px;letter-spacing:-.6px}
+.ix.t{top:3px;left:3px}
+.ix.b{bottom:3px;right:3px;transform:rotate(180deg)}
+.ix .sv{width:7px;height:7px}
+.ct{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+.ct .sv{width:19px;height:19px}
+.sv{display:block;fill:currentColor}
+/* 无花色牌（21 点 / 24 点）：引擎只知道点数，不虚构花色。
+   中央放大点数补上"牌感"，角标照旧，绝不填一个系统并不知道的花色。 */
+.pf.ns .ct{font-size:22px;letter-spacing:-1px}
+.pcard.ph{cursor:default}
+.pf.ph{background:transparent;border:1px dashed var(--line);color:var(--dim);
+  font-size:11px;font-weight:500;display:flex;align-items:center;justify-content:center;
+  text-align:center;line-height:1.2}
 /* 选牌键盘吸底：德州录完手牌后结论卡会把键盘顶出首屏（实测掉到 710px，
    而 iPhone SE 只有 667px），继续录公共牌得先滚一下。吸底后永远落在拇指区。
    用 fixed 不用 sticky —— sticky bottom:0 会把元素从自然位置往上提，
@@ -161,6 +203,7 @@ details.note summary::after{content:" ▾"} details.note[open] summary::after{co
 .dock{position:fixed;left:0;right:0;bottom:0;max-width:520px;margin:0 auto;
   z-index:5;background:var(--bg);border-top:1px solid var(--line);
   padding:8px 12px calc(6px + env(safe-area-inset-bottom))}
+body:has(.cost-panel input:focus) .dock{visibility:hidden}
 .dock .lab{margin-top:2px}
 /* 键盘上沿加一道渐隐：内容滑到它底下时读起来是"还能往下滚"，
    而不是"这行字被切坏了"。没有它的时候备选列表会在半行处被硬生生截断。 */
@@ -182,6 +225,8 @@ details.note summary::after{content:" ▾"} details.note[open] summary::after{co
   font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:.3px}
 .sol:first-child{border-top:none}
 .sol b{color:var(--blue)}
+@media (max-width:359px){.ranks,.grid7{grid-template-columns:repeat(6,1fr)}}
+@media (max-height:480px) and (orientation:landscape){.dock{position:static}.dock::before{display:none}}
 @media (min-width:430px){ .pad svg{width:38px;height:38px} .vact{font-size:32px} .tile{min-height:126px} }
 </style>
 </head>

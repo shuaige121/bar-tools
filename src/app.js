@@ -24,13 +24,22 @@ function el(html) { var d = document.createElement('div'); d.innerHTML = html; r
  * 为什么用 fixed 不用 sticky：sticky bottom:0 会把元素从自然位置往上提，提上去就盖住
  * 前面的内容（实测把结论卡压掉 7px，文字被拦腰切断）。
  */
+// 切页时必须拆掉：observer 和 resize 监听原来一直挂着，回到首页再转个屏，
+// 上一个工具的 fit() 就会拿着已经脱离文档的 dock（offsetHeight=0）去改 body 的补白。
+// 所以 installDock 把 dispose 登记到 DOCKS，由 route() 统一拆（Codex P0 第三条）。
+var DOCKS = [];
 function installDock(root) {
   var dock = root.querySelector('.dock');
   if (!dock) return function () {};
   var fit = function () { document.body.style.paddingBottom = (dock.offsetHeight + 18) + 'px'; };
   fit();
-  if (window.ResizeObserver) new ResizeObserver(fit).observe(dock);
+  var ro = window.ResizeObserver ? new ResizeObserver(fit) : null;
+  if (ro) ro.observe(dock);
   window.addEventListener('resize', fit);
+  DOCKS.push(function dispose() {
+    if (ro) ro.disconnect();
+    window.removeEventListener('resize', fit);
+  });
   return function keep() {
     var vd = root.querySelector('.verdict');
     if (!vd) return;
@@ -40,6 +49,102 @@ function installDock(root) {
 }
 function save(k, v) { try { localStorage.setItem('bar:' + k, JSON.stringify(v)); } catch (e) {} }
 function load(k, d) { try { var v = localStorage.getItem('bar:' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }
+
+// ══════════════════ Educational context and opportunity cost ══════════════════
+var EXPECT = {
+  dice: '胜率随叫法与对手变化',
+  holdem: '底池份额随手牌变化，非盈利概率',
+  bj: '收益示例 −0.570%，并非胜率',
+  p24: '无对赌胜率，只求解'
+};
+var CONTEXT = {
+  dice: '本轮不喝是对手模型下的估计，不等于赚钱概率。只有玩家、座位和策略完全对称，且每轮仅一人输时，个人输的概率才是 1/人数。',
+  holdem: '大字是对随机未知手牌的预期底池份额；多人平分按实际人数分配。无抽水时全桌盈亏之和为零，个人收益仍取决于技术、下注与对手；扣抽水后全桌总体期望为负。',
+  bj: '单手最优动作可能有正期望，不代表整局能赚钱。无限副牌基本策略示例（可分牌后加倍、无投降）：庄软17停约 −0.570%，庄软17要约 −0.789%，21点赔6:5约 −1.923%。示例与上方允许投降的单手计算分开。',
+  p24: '这是数学练习，没有金钱输赢或赌博胜率；学习和娱乐价值不折算成钱。'
+};
+var WAGE_CENTS_H = 1204;
+function wageNote() {
+  return '<p>以麦当劳等快餐店打工作比较：采用 <a href="https://www.mom.gov.sg/employment-practices/progressive-wage-model/food-services-sector" target="_blank" rel="noopener">MOM 快餐店柜台员 PWM</a> 参考毛时薪 S$12.04（2026-07-01 至 2027-06-30）。适用于受覆盖雇主的公民／PR 员工，不是麦当劳官方报价，也不是到手工资。</p>';
+}
+function educationNote() {
+  return '<details class="note education"><summary>为什么做这个 · 法律与计算依据</summary>'+
+    '<p>作者本人不赌博。本站用于概率教育，帮助朋友看清庄家优势、抽水与时间成本，不提供投注服务。</p>'+
+    '<p>有庄家优势的玩法，玩家长期期望为负；短期赢钱不能改变这一点。玩家之间的游戏不能一概说每个人期望都为负，时间成本也应单独算清。</p>'+
+    '<p>新加坡禁止未经许可或豁免的赌博。亲友在私人住家进行的社交赌博须符合条件；公共场所不适用住家社交赌博豁免。<a href="https://www.mha.gov.sg/what-we-do/maintaining-law-and-order/regulating-casino-and-gambling-industry/" target="_blank" rel="noopener">MHA 法律说明</a></p>'+
+    wageNote()+'<p>计时只统计页面可见时间，切后台或关屏暂停；不能推断你在页面外玩了多久。按参考时薪计算的是机会成本，不是实际少领的工资。</p></details>';
+}
+// Keep cumulative totals locally; performance.now avoids system-clock jumps.
+var TKEY = 'bar.timeMs', TK2 = 'bar.timeByTool';
+function readMs(key) { try { var n = Number(localStorage.getItem(key)); return isFinite(n) && n >= 0 ? n : 0; } catch (e) { return 0; } }
+function readTimes() { try { var o = JSON.parse(localStorage.getItem(TK2)); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; } }
+var TLEDGER = 'bar.timeLedger';
+var tAcc = readMs(TKEY), tTools = readTimes(), tActive = '', tMark = document.hidden ? null : performance.now(), tWall = Date.now();
+function tFlush() {
+  var now = performance.now(), wall = Date.now(), delta = tMark === null ? 0 : Math.max(0, now - tMark);
+  try {
+    var shared = JSON.parse(localStorage.getItem(TLEDGER));
+    if (shared && isFinite(shared.total) && shared.total >= 0 && shared.tools && typeof shared.tools === 'object') {
+      tAcc = shared.total; tTools = shared.tools;
+      // Count overlapping visible tabs once; a hidden stale tab only reads the ledger.
+      if (shared.end > tWall && shared.end <= wall) delta = Math.min(delta, Math.max(0, wall - shared.end));
+    }
+  } catch (e) {}
+  tAcc += delta;
+  if (CONTEXT[tActive]) tTools[tActive] = (Number(tTools[tActive]) || 0) + delta;
+  if (tMark !== null) tMark = now;
+  tWall = wall;
+  if (delta > 0) {
+    try {
+      localStorage.setItem(TLEDGER, JSON.stringify({total:tAcc, tools:tTools, end:wall}));
+      localStorage.setItem(TKEY, String(Math.round(tAcc)));
+      localStorage.setItem(TK2, JSON.stringify(tTools));
+    } catch (e) {}
+  }
+}
+function tCents(ms) { return Math.round(WAGE_CENTS_H * ms / 3600000); }
+function tMoney(cents) { return (Math.abs(cents) / 100).toFixed(2); }
+function signedMoney(cents) { return (cents < 0 ? '−' : cents > 0 ? '+' : '') + 'S$' + tMoney(cents); }
+function duration(ms) { var n = Math.floor(ms / 1000); return Math.floor(n / 60) + ':' + ('0' + n % 60).slice(-2); }
+function tLine() { return '本站累计 ' + duration(tAcc) + ' · 时间成本 S$' + tMoney(tCents(tAcc)); }
+function costPanel(id) {
+  var input = id === 'p24' ? '<p class="note">数学练习：游戏金钱收益按 S$0 计。</p>' : id === 'bj'
+    ? '<label for="cash">假设累计初始下注额（S$，默认不下注）</label><input id="cash" type="number" inputmode="decimal" min="0" max="100000000" step="0.01" value="0">'+
+      '<label for="ev-rule">长期收益示例规则（均无投降）</label><select id="ev-rule"><option value="0.00570">庄软17停 · 3:2 · −0.570%</option><option value="0.00789">庄软17要 · 3:2 · −0.789%</option><option value="0.01923">庄软17停 · 6:5 · −1.923%</option></select>'
+    : '<label for="cash">假设游戏净收益（S$，已扣抽水；可填负数）</label><input id="cash" type="number" inputmode="text" min="-100000000" max="100000000" step="0.01" value="0"><p class="note">默认 S$0 表示不赌钱。此值由你假设，不能由胜率直接推得。</p>';
+  return '<section class="cost-panel" data-cost="'+id+'"><h3>把时间也算进去</h3><p id="tooltime"></p>'+input+
+    '<p class="net" id="netcost"></p><p class="note">净收益 = 游戏收益 − 本工具时间成本（S$12.04/小时）。仅作机会成本比较。</p></section>';
+}
+function updateCost() {
+  var clock = $('timecost'); if (clock) clock.textContent = tLine();
+  var panel = view.querySelector('[data-cost]'); if (!panel) return;
+  var id = panel.dataset.cost, ms = Number(tTools[id]) || 0, cost = tCents(ms);
+  $('tooltime').textContent = '本工具累计 ' + duration(ms) + ' · 时间成本 S$' + tMoney(cost);
+  var cash = $('cash'), val = cash ? Number(cash.value) : 0;
+  if (cash && (cash.value.trim() === '' || !cash.validity.valid || !isFinite(val))) {
+    $('netcost').textContent = '请填写有效金额；时间成本 S$' + tMoney(cost); return;
+  }
+  var gross = id === 'bj' ? -Math.round(val * 100 * Number($('ev-rule').value)) : Math.round(val * 100);
+  $('netcost').textContent = '游戏' + (id === 'bj' ? '期望' : '') + '收益 ' + signedMoney(gross) + ' − 时间 S$' + tMoney(cost) + ' = 净收益 ' + signedMoney(gross - cost);
+}
+document.addEventListener('visibilitychange', function () {
+  tFlush(); tMark = document.hidden ? null : performance.now(); updateCost();
+});
+window.addEventListener('pagehide', function () { tFlush(); tMark = null; });
+window.addEventListener('pageshow', function () { tMark = document.hidden ? null : performance.now(); });
+setInterval(function () { tFlush(); updateCost(); }, 1000);
+
+// ══════════════════ 最近使用（首页排序） ══════════════════
+// 只在渲染首页时排一次；停留首页期间不重排，否则卡片会在手指底下跳。
+var LKEY = 'bar.lastUsed';
+function luRead() { try { var o = JSON.parse(localStorage.getItem(LKEY) || '{}'); return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; } }
+function luMark(id) {
+  var o = luRead(), mx = 0;
+  for (var k in o) if (typeof o[k] === 'number' && o[k] > mx) mx = o[k];
+  // 同一毫秒内连开两个工具时 Date.now() 会打平，顺序就成了随机的；强制严格递增
+  o[id] = Math.max(Date.now(), mx + 1);
+  try { localStorage.setItem(LKEY, JSON.stringify(o)); } catch (e) {}
+}
 
 var PIPS = {1:[[1,1]],2:[[0,0],[2,2]],3:[[0,0],[1,1],[2,2]],
             4:[[0,0],[2,0],[0,2],[2,2]],5:[[0,0],[2,0],[1,1],[0,2],[2,2]],
@@ -56,24 +161,36 @@ function die(v) {
 var TOOLS = [
   { id:'dice',   ic:'⚄',   nm:'吹牛骰子', ds:'该开还是该往上叫，逐个叫法算胜率' },
   { id:'holdem', ic:'♠♥',  nm:'德州扑克', ds:'手牌+公共牌，算你现在的胜率' },
-  { id:'bj',     ic:'21',  nm:'21点',     ds:'要牌/停牌/双倍/分牌，直接告诉你怎么打' },
+  { id:'bj',     ic:'21',  nm:'21点',     ds:'比较各动作期望，理解庄家优势' },
   { id:'p24',    ic:'24',  nm:'24点',     ds:'四张牌，列出全部解法' }
 ];
+// 首页顺序 = 最近用过的排前面（降序），没用过的保持上面的默认顺序
+function homeOrder() {
+  var o = luRead(), used = [], fresh = [];
+  for (var i = 0; i < TOOLS.length; i++) {
+    if (typeof o[TOOLS[i].id] === 'number') used.push(TOOLS[i]); else fresh.push(TOOLS[i]);
+  }
+  used.sort(function (a, b) { return o[b.id] - o[a.id]; });
+  return used.concat(fresh);
+}
 var Home = {
   title: '', sub: '',      // header 标题留空 —— 下面 hero 已经写了名字，重复两遍很难看
   mount: function (root) {
-    var h = '<div class="hero"><h2>酒桌工具箱</h2><p>四个算牌小工具 · 全部离线可用 · 加到主屏幕即当 App</p></div><div class="menu">';
-    for (var i = 0; i < TOOLS.length; i++) {
-      var t = TOOLS[i];
+    var h = '<div class="hero"><h2>酒桌工具箱</h2><p>概率教育 · 离线可用</p></div>'+
+      '<p class="purpose">作者本人不赌博。算清概率，也算清时间成本。</p><div class="menu">';
+    var order = homeOrder();
+    for (var i = 0; i < order.length; i++) {
+      var t = order[i];
       h += '<button class="tile t-'+t.id+'" data-go="'+t.id+'"><span class="ic">'+t.ic+'</span>'+
-           '<span class="nm">'+t.nm+'</span><span class="ds">'+t.ds+'</span></button>';
+           '<span class="nm">'+t.nm+'</span><span class="ds">'+t.ds+'</span>'+
+           '<span class="ex">（'+EXPECT[t.id]+'）</span></button>';
     }
-    h += '</div><p class="note">所有计算都在你手机本地完成，不上传任何东西。'+
+    h += '</div><p class="note">牌面、计时和使用记录仅存本机。'+
          '每个工具的算法说明和验证方式，在各自页面底部。</p>';
     root.innerHTML = h;
-    root.addEventListener('click', function (e) {
+    root.onclick = function (e) {
       var b = e.target.closest('[data-go]'); if (b) location.hash = '#' + b.dataset.go;
-    });
+    };
   }
 };
 
@@ -242,12 +359,42 @@ var Dice = {
 
 // ══════════════════ 扑克牌共用 ══════════════════
 var SUIT_CH = ['♠','♥','♦','♣'], SUIT_RED = [false,true,true,false], RK = '23456789TJQKA';
-function rkLabel(r) { return ({8:'T'})[r] ? '10' : (RK[r] === 'T' ? '10' : RK[r]); }
-function cardHTML(c, cls) {
-  var r = EngineHoldem.rankOf(c) - 2, s = EngineHoldem.suitOf(c);
-  return '<span class="pcard'+(SUIT_RED[s]?' red':'')+(cls?' '+cls:'')+'" data-c="'+c+'">'+
-         (RK[r]==='T'?'10':RK[r])+'<span class="s">'+SUIT_CH[s]+'</span></span>';
+var SUIT_NM = ['黑桃','红桃','方块','梅花'], SUIT_KEY = ['spade','heart','diamond','club'];
+// 内联 SVG 而不是 ♠♥♦♣ 字形：同一个字符在 iOS / Android / Windows 上的字形、粗细、
+// 基线全都不一样，四个花色凑在 19px 的牌心上会明显不齐。SVG 是自带的，且不引外部资源。
+// 形状本身可被几何鉴别（红桃顶部有凹口、方块有下尖角、梅花最宽），测试端据此独立核对花色，
+// 不靠读 data-c 自证。
+var SUIT_PATH = [
+  'M12 2c0 0-8 5.6-8 10.3 0 2.7 2 4.4 4.1 4.4 1.3 0 2.3-.6 2.9-1.4-.2 2.1-1 3.6-2.3 4.5v.6h6.6v-.6c-1.3-.9-2.1-2.4-2.3-4.5.6.8 1.6 1.4 2.9 1.4 2.1 0 4.1-1.7 4.1-4.4C20 7.6 12 2 12 2z',
+  'M12 21.2c-1.1-1-8.3-6.4-8.3-11.4 0-2.7 2.1-4.8 4.7-4.8 1.6 0 3 .8 3.6 2 .6-1.2 2-2 3.6-2 2.6 0 4.7 2.1 4.7 4.8 0 5-7.2 10.4-8.3 11.4z',
+  'M12 1.8 19.4 12 12 22.2 4.6 12z',
+  'M12 2.2a3.9 3.9 0 0 0-2.7 6.7 3.9 3.9 0 1 0-2.8 6.9c1.3 0 2.4-.6 3.1-1.6-.1 2.3-.9 4-2.3 5v.6h9.4v-.6c-1.4-1-2.2-2.7-2.3-5 .7 1 1.8 1.6 3.1 1.6a3.9 3.9 0 1 0-2.8-6.9A3.9 3.9 0 0 0 12 2.2z'
+];
+function suitPath(s) { return SUIT_PATH[s]; }
+function suitSVG(s) {
+  return '<svg class="sv" viewBox="0 0 24 24" data-suit="'+SUIT_KEY[s]+'" aria-hidden="true">'+
+         '<path d="'+suitPath(s)+'"/></svg>';
 }
+function rkLabel(r) { return ({8:'T'})[r] ? '10' : (RK[r] === 'T' ? '10' : RK[r]); }
+// 一个牌面渲染入口，三个工具共用：s=null 就是"没有花色"，不是"还没录完"。
+function faceHTML(lab, s) {
+  if (s == null)
+    return '<span class="pf ns"><span class="ix t">'+lab+'</span>'+
+           '<span class="ct">'+lab+'</span><span class="ix b">'+lab+'</span></span>';
+  var sv = suitSVG(s);
+  return '<span class="pf"><span class="ix t">'+lab+sv+'</span>'+
+         '<span class="ct">'+sv+'</span><span class="ix b">'+lab+sv+'</span></span>';
+}
+function cardHTML(c, cls) {
+  var r = EngineHoldem.rankOf(c) - 2, s = EngineHoldem.suitOf(c), lab = (RK[r]==='T'?'10':RK[r]);
+  return '<button class="pcard'+(SUIT_RED[s]?' red':'')+(cls?' '+cls:'')+'" data-c="'+c+
+         '" aria-label="'+SUIT_NM[s]+lab+'">'+faceHTML(lab, s)+'</button>';
+}
+// 21 点 / 24 点：引擎只知道点数。**不随机配花色**，也不为了美术多加一步录入。
+function plainCardHTML(lab, attrs) {
+  return '<button class="pcard" '+attrs+' aria-label="'+lab+'">'+faceHTML(lab, null)+'</button>';
+}
+function phCardHTML(txt) { return '<span class="pcard ph"><span class="pf ph">'+txt+'</span></span>'; }
 function cardPicker(id, suit) {
   var h = '<div class="suits" id="'+id+'-suits">';
   for (var s = 0; s < 4; s++) h += '<button data-s="'+s+'" class="'+(SUIT_RED[s]?'red':'')+(s===suit?' on':'')+'">'+SUIT_CH[s]+'</button>';
@@ -287,10 +434,10 @@ var Holdem = {
       $('opps').innerHTML=h; $('on').textContent=S.opps+' 家'; }
     function renderSlots() {
       var t=$('hole'), h='';
-      for (var i=0;i<2;i++) h += S.hole[i]!=null ? cardHTML(S.hole[i]) : '<span class="pcard ph">手牌</span>';
+      for (var i=0;i<2;i++) h += S.hole[i]!=null ? cardHTML(S.hole[i]) : phCardHTML('手牌');
       t.className='tray'; t.innerHTML=h;
       var b=$('board'), h2='';
-      for (var j=0;j<5;j++) h2 += S.board[j]!=null ? cardHTML(S.board[j]) : '<span class="pcard ph">'+(j<3?'翻牌':j===3?'转牌':'河牌')+'</span>';
+      for (var j=0;j<5;j++) h2 += S.board[j]!=null ? cardHTML(S.board[j]) : phCardHTML(j<3?'翻牌':j===3?'转牌':'河牌');
       b.className='tray'; b.innerHTML=h2;
       $('stage').textContent = S.board.length===0?'翻牌前':S.board.length===3?'翻牌':S.board.length===4?'转牌':S.board.length===5?'河牌':(S.board.length+' 张');
       // 只禁用"这张已经被用掉了"的点数。牌录满时**不**整片变灰——
@@ -318,7 +465,7 @@ var Holdem = {
       var strong = r.equity >= 0.5;
       box.innerHTML =
         '<div class="verdict '+(strong?'raise':'open')+'"><div class="vact">'+pct1(r.equity)+'</div>'+
-        '<div class="vwhy">对 <b>'+S.opps+'</b> 个未知对手，打到河牌你赢下这个池的概率（平分按一半算，所以和下面的「赢」略有出入）'+
+        '<div class="vwhy">对 <b>'+S.opps+'</b> 个未知对手，打到河牌的预期底池份额（平分按实际人数分配，并非盈利概率）'+
         (made?('。你现在已经成牌：<b>'+made+'</b>'):'')+'。</div>'+
         // 这句原来在结论卡下方的 note 里，被吸底键盘整段遮住 —— 四张截图里一次都没出现。
         // 它不是注脚，是"跟不跟"这个问题的直接答案，必须和大字同框。
@@ -326,10 +473,10 @@ var Holdem = {
         // 「至少要有你跟注额的 0.0 倍」这种胡话（实拍到河牌两对 96.2% 那张）。
         // 分三档：必赢 / 赢面极大（倍数已小到没有意义）/ 正常。
         '<div class="vwhy" style="margin-top:6px;color:var(--fg)">'+(function(){
-          if (r.equity > 0.999) return '这手基本必赢，怎么跟都不亏。';
+          if (r.equity > 0.999) return '模型下底池份额接近100%；仍需扣抽水、后续投入与时间成本。';
           var mult = 1 / r.equity - 1;
-          if (mult < 0.05) return '这手赢面极大，底池里随便有点钱，跟就不亏。';
-          return '底池至少要有你跟注额的 <b>' + mult.toFixed(mult < 1 ? 2 : 1) + ' 倍</b>，跟才不亏。';
+          if (mult < 0.05) return '模型下底池份额很高；抽水、后续投入与时间成本仍会影响净收益。';
+          return '底池至少要有你跟注额的 <b>' + mult.toFixed(mult < 1 ? 2 : 1) + ' 倍</b>才达到不计抽水、后续投入及时间成本的跟注盈亏平衡点。';
         })()+'</div>'+
         '<div class="vstats">'+
         '<div class="stat"><div class="k">赢</div><div class="v" style="color:var(--raise)">'+pct1(r.win)+'</div></div>'+
@@ -370,9 +517,11 @@ var BJ = {
     var S = this.S, keepBJ = null;
     var LB = ['A','2','3','4','5','6','7','8','9','10'];
     root.innerHTML =
-      '<div class="sec"><div class="lab"><span>我的牌</span>'+
+      // 牌面无花色是刻意的：引擎里 J/Q/K 都已经并成 10 点，画成具体的黑桃K 就是虚构。
+      // 这句必须**可见**，不能只躺在折叠的算法说明里 —— 用户看到没花色的牌会以为没录完。
+      '<div class="sec"><div class="lab"><span>我的牌<span style="color:#5a6577"> · 10 含 J/Q/K，牌面不带花色</span></span>'+
         '<span class="act" id="clr">清空</span></div>'+
-        '<div class="tray" id="mine"></div></div>'+
+        '<div class="tray tight" id="mine"></div></div>'+
       '<div id="out"></div>'+
       '<div class="sec"><div class="lab"><span>Hi-Lo 算牌<span style="color:#5a6577"> · 庄家暗牌、别家的牌在这里补记</span></span>'+
         '<span class="act" id="undoCount" style="color:var(--gold)">撤一张</span>'+
@@ -396,6 +545,8 @@ var BJ = {
       '<p><b>怎么验的</b>：14条公认锚点全部命中（AA永远分、88永远分、TT永远不分、硬11对2~10双倍、硬12对4/5/6停…）；'+
       '用基本策略打完整局的整体期望，S17+DAS 算出 -0.570%、H17 算出 -0.789%、21点只赔6:5 算出 -1.923%，'+
       '与公开的庄家优势一致；再用40万手蒙特卡洛照算出的策略实打，收益与解析值在3σ内吻合。</p>'+
+      '<p><b>牌面没有花色，10 含 J/Q/K</b>：21 点只看点数，J/Q/K 都算 10 点，引擎里根本不区分，'+
+      '所以这里的牌一律画成无花色的点数牌 —— 随机配个花色会让人以为系统知道得更多。</p>'+
       '<p><b>牌堆按无限副建模</b>（公开基本策略表的通行基准）。真实6副牌的少数格子会略有差异。</p>'+
       '<p><b>Hi-Lo</b>：2-6记+1，7-9记0，10/J/Q/K/A记-1。真数=流水÷剩余副数。真数≥+3时买保险才有利。</p></details>';
 
@@ -405,9 +556,10 @@ var BJ = {
     }
     function renderMine() {
       var t=$('mine');
-      if (!S.mine.length) { t.className='tray empty'; t.textContent='点下面的牌输入你的手牌'; return; }
-      t.className='tray'; var h='';
-      for (var i=0;i<S.mine.length;i++) h+='<span class="pcard" data-i="'+i+'">'+LB[S.mine[i]===10?9:S.mine[i]-1]+'</span>';
+      // tight：7 张 44px 外壳靠 4px 间距才能不换行（8 张仍允许换行）
+      if (!S.mine.length) { t.className='tray tight empty'; t.textContent='点下面的牌输入你的手牌'; return; }
+      t.className='tray tight'; var h='';
+      for (var i=0;i<S.mine.length;i++) h+=plainCardHTML(LB[S.mine[i]===10?9:S.mine[i]-1], 'data-i="'+i+'"');
       t.innerHTML=h;
     }
     function renderCount() {
@@ -563,8 +715,8 @@ var P24 = {
     function renderSlots() {
       var t=$('slots'), h='';
       for (var i=0;i<4;i++) h += S.nums[i]!=null
-        ? '<span class="pcard" data-i="'+i+'">'+Engine24.cardLabel(S.nums[i])+'</span>'
-        : '<span class="pcard ph">?</span>';
+        ? plainCardHTML(Engine24.cardLabel(S.nums[i]), 'data-i="'+i+'"')
+        : phCardHTML('?');
       t.className='tray'; t.innerHTML=h;
       // 故意不 disable —— 一排灰按钮既难看又让人以为坏了。满四张后再点 = 开新一组。
       $('padhint').textContent = S.nums.length>=4 ? '已满 · 再点一张牌即开新一组' : '点牌面加入';
@@ -603,7 +755,12 @@ var P24 = {
 // ══════════════════ 路由 ══════════════════
 var ROUTES = { '':Home, '#':Home, '#dice':Dice, '#holdem':Holdem, '#bj':BJ, '#p24':P24 };
 function route() {
+  tFlush();
   var v = ROUTES[location.hash] || Home;
+  var id = location.hash.replace(/^#/, '');
+  tActive = v === Home ? '' : id;
+  document.body.classList.toggle('home', v === Home);
+  while (DOCKS.length) DOCKS.pop()();          // 先拆上一个工具的 observer / resize 监听
   document.body.style.paddingBottom = '';     // 上一个工具若加过吸底留白，这里清掉
   view.innerHTML=''; view.onclick=null;
   hbtn.style.display = v.headerBtn ? '' : 'none';
@@ -611,9 +768,15 @@ function route() {
   backEl.style.display = (v === Home) ? 'none' : '';
   titleEl.innerHTML = v.title;
   document.scrollingElement.scrollTop = 0;
+  if (v !== Home && EXPECT[id]) luMark(id);   // 进过的工具下次在首页排前面
   v.mount(view);
+  var f = v !== Home && EXPECT[id] ? '<p class="note expectation">（'+EXPECT[id]+'）</p><p class="note">'+CONTEXT[id]+'</p>'+costPanel(id) : '';
+  view.insertAdjacentHTML('beforeend', f + '<p class="note" id="timecost">'+tLine()+'</p>'+educationNote());
+  if ($('cash')) $('cash').oninput = updateCost;
+  if ($('ev-rule')) $('ev-rule').onchange = updateCost;
+  updateCost();
 }
-backEl.onclick = function () { if (history.length > 1) history.back(); else location.hash = ''; };
+backEl.onclick = function () { location.hash = ''; };
 window.addEventListener('hashchange', route);
 route();
 // zone 级 Browser Cache TTL（4小时）会盖掉 _headers 里的 no-cache，改不了那个设置
